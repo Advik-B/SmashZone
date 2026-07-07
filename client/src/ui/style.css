@@ -54,52 +54,80 @@ body {
   background: radial-gradient(ellipse at 50% 30%, #1a2040 0%, #0b0e1a 70%);
 }
 
+/* Extruded arcade plaque — raised solid letters, not a neon gradient. */
 .menu h1 {
   font-size: 64px;
   letter-spacing: 4px;
   font-weight: 900;
-  background: linear-gradient(135deg, #ffb347, #ff5e7d, #a15eff);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: #ff6f8b;
   margin-bottom: 12px;
+  text-shadow: 0 1px 0 #c94e69, 0 2px 0 #a83e58, 0 3px 0 #8f2f47,
+    0 4px 7px rgba(0, 0, 0, 0.55);
 }
 
+/* Recessed slot — inset shadow reads as a physical cut-out. */
 .menu input {
   font-size: 20px;
   padding: 12px 18px;
-  border-radius: 10px;
-  border: 2px solid #3a4270;
-  background: #141830;
+  border-radius: 8px;
+  border: 1px solid #2a3055;
+  border-top-color: #0c1024;
+  background: #10142a;
   color: #eef1ff;
   text-align: center;
   outline: none;
   width: 260px;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
 }
 
 .menu input:focus {
   border-color: #7d8aff;
 }
 
+/* Tactile plate — solid fill with a bevelled bottom edge that presses in. */
 .menu button {
   font-size: 20px;
-  font-weight: 700;
-  padding: 12px 34px;
-  border-radius: 10px;
-  border: none;
+  font-weight: 800;
+  padding: 13px 34px;
+  border-radius: 9px;
+  border: 1px solid #b04863;
+  border-bottom: 4px solid #8f2f47;
+  background: #e05a79;
+  color: #fff;
   cursor: pointer;
-  background: linear-gradient(135deg, #ff5e7d, #a15eff);
-  color: white;
-  transition: transform 0.08s ease;
   width: 260px;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+  transition: background 0.12s ease;
 }
 
 .menu button:hover {
-  transform: scale(1.04);
+  background: #ec6786;
+}
+
+.menu button:active {
+  border-bottom-width: 1px;
+  transform: translateY(3px);
+}
+
+.menu button:focus-visible {
+  outline: 2px solid #ffd0dc;
+  outline-offset: 2px;
 }
 
 .menu button.secondary {
-  background: #2a3055;
+  background: #232a4a;
+  border-color: #343d68;
+  border-bottom-color: #12162c;
+  color: #cdd3f0;
+  text-shadow: none;
+}
+
+.menu button.secondary:hover {
+  background: #2b3357;
+}
+
+.menu button.secondary:focus-visible {
+  outline-color: #7d8aff;
 }
 
 .menu .error {
@@ -217,6 +245,7 @@ body {
   font-weight: 900;
   letter-spacing: 14px;
   color: #ffd76e;
+  text-shadow: 0 2px 0 #7a5a12, 0 3px 6px rgba(0, 0, 0, 0.5);
 }
 
 .lobby-panel .players {
@@ -227,12 +256,44 @@ body {
   justify-content: center;
 }
 
+/* Name plate: dark panel, player-colour top edge, bevelled bottom. */
 .lobby-panel .pcard {
-  background: #1a2040;
-  border-radius: 12px;
+  background: #191d33;
+  border: 1px solid #2a3055;
+  border-top: 4px solid var(--slot, #2a3055);
+  border-bottom: 3px solid #10142a;
+  border-radius: 8px;
   padding: 14px 20px;
   font-weight: 700;
-  border-top: 4px solid;
+}
+
+/* Large primary action (START MATCH / REMATCH) — same plate as the menu. */
+.big-btn {
+  font-size: 22px;
+  font-weight: 800;
+  padding: 14px 44px;
+  border-radius: 10px;
+  border: 1px solid #b04863;
+  border-bottom: 5px solid #8f2f47;
+  background: #e05a79;
+  color: #fff;
+  cursor: pointer;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+  transition: background 0.12s ease;
+}
+
+.big-btn:hover {
+  background: #ec6786;
+}
+
+.big-btn:active {
+  border-bottom-width: 2px;
+  transform: translateY(3px);
+}
+
+.big-btn:focus-visible {
+  outline: 2px solid #ffd0dc;
+  outline-offset: 3px;
 }
 
 .hint {
@@ -297,6 +358,124 @@ body {
   width: 15px;
   height: 18px;
   display: inline-block;
+}
+
+/* --- input-mode prompt (keyboard+mouse vs keyboard+trackpad) --- */
+.mode-modal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(11, 14, 26, 0.94);
+}
+
+.mode-modal h2 {
+  font-size: 28px;
+  letter-spacing: 2px;
+  font-weight: 900;
+}
+
+.mode-cards {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Physical "panel" look: a recessed bottom edge like the keycap glyphs. */
+.mode-card {
+  width: 280px;
+  padding: 18px;
+  border-radius: 8px;
+  border: 1px solid #2a3055;
+  border-bottom: 4px solid #12162c;
+  background: #191d33;
+  color: #eef1ff;
+  cursor: pointer;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font: inherit;
+}
+
+.mode-card b {
+  font-size: 18px;
+  letter-spacing: 0.5px;
+}
+
+.mode-card:hover {
+  background: #1e2340;
+}
+
+/* Keyboard cursor: a plain solid outline, no neon glow. */
+.mode-card:focus,
+.mode-card:focus-visible {
+  outline: 2px solid #7d8aff;
+  outline-offset: 2px;
+}
+
+/* Presses in like a real button. */
+.mode-card:active {
+  border-bottom-width: 1px;
+  transform: translateY(3px);
+}
+
+/* Scoped above the generic `.menu button` rule so it stays a plain text link. */
+.menu .linklike {
+  width: auto;
+  background: none;
+  border: none;
+  color: #7d8aff;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+/* Settings gear, styled like a physical key. Selectors are scoped with `.menu`
+ * to outrank the generic `.menu button` (gradient/260px) styling. */
+.menu .menu-gear {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid #2a3055;
+  border-bottom: 3px solid #12162c;
+  border-radius: 8px;
+  background: #191d33;
+  color: #aab2e6;
+  cursor: pointer;
+}
+
+.menu .menu-gear:hover {
+  color: #eef1ff;
+  background: #1e2340;
+}
+
+.menu .menu-gear:focus-visible {
+  outline: 2px solid #7d8aff;
+  outline-offset: 2px;
+}
+
+.menu .menu-gear:active {
+  border-bottom-width: 1px;
+  transform: translateY(2px);
+}
+
+.icon-gear {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 
 /* --- touch controls --- */

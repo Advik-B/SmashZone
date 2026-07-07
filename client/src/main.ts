@@ -1,6 +1,13 @@
 import init, { ClientSim } from "./wasm/pkg/sim_wasm";
 import { GameClient } from "./net/gameclient";
-import { InputManager, isTouchDevice } from "./game/input";
+import {
+  INPUT_MODE_KEY,
+  InputManager,
+  hasSavedInputMode,
+  isTouchDevice,
+  savedInputMode,
+  type InputMode,
+} from "./game/input";
 import { loadCharacterModel } from "./game/players";
 import { Renderer } from "./game/renderer";
 import { TouchControls } from "./game/touch";
@@ -26,6 +33,7 @@ async function main() {
   }
   const input = new InputManager(canvas);
   input.attach();
+  input.setMode(savedInputMode());
   const touch = isTouchDevice() ? new TouchControls(input) : null;
   const ui = new UI();
 
@@ -33,11 +41,32 @@ async function main() {
 
   window.addEventListener("resize", () => renderer.resize());
 
+  const pickMode = (m: InputMode) => {
+    localStorage.setItem(INPUT_MODE_KEY, m);
+    input.setMode(m);
+  };
+
+  /** First-join gate: ask how the player aims before connecting. */
+  const ensureMode = (): Promise<boolean> => {
+    if (touch || hasSavedInputMode()) return Promise.resolve(true);
+    return new Promise((resolve) =>
+      ui.showInputModePrompt(
+        null,
+        (m) => {
+          pickMode(m);
+          resolve(true);
+        },
+        () => resolve(false), // Esc: abort the join, ask again next time
+      ),
+    );
+  };
+
   const showMenu = (error = "") => {
     document.exitPointerLock?.();
     touch?.hide();
     ui.showMenu(
       async (name) => {
+        if (!(await ensureMode())) return;
         try {
           const code = await createRoom();
           start(name, code);
@@ -45,8 +74,18 @@ async function main() {
           showMenu(String(e));
         }
       },
-      (name, code) => start(name, code),
+      async (name, code) => {
+        if (!(await ensureMode())) return;
+        start(name, code);
+      },
       error,
+      touch
+        ? null
+        : () =>
+            ui.showInputModePrompt(savedInputMode(), (m) => {
+              pickMode(m);
+              showMenu(); // refresh hints + mode label
+            }, () => {}),
     );
   };
 
