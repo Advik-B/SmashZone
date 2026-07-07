@@ -11,6 +11,11 @@ weapon pickups (they outlast the main platform, but not forever).
 - **WASD** move (camera-relative) · **mouse** aim camera (click to lock)
 - **Space** jump / double-jump · **Shift** dash
 - **LMB / J** light attack · **RMB / K** heavy attack (in the air: ground slam)
+- **Keyboard-only mode** (you're asked on first join whether you play with a
+  mouse or a trackpad; change it anytime from the menu): **arrow keys** aim the
+  camera, **J / K** attack, **C** snaps the camera behind you, and while you run
+  the camera gently settles behind your movement — no pointer lock, no mouse
+  needed anywhere (menus and lobby work with Tab/arrows + Enter)
 - **Touch devices** get on-screen controls: a floating thumbstick (bottom-left)
   to move, drag anywhere else to aim, and jump / light / heavy / dash buttons
   (bottom-right)

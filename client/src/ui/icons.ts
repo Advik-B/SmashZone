@@ -13,6 +13,11 @@ export function wasdCluster(): string {
   return `<span class="kbd-cluster">${keycap("W")}${keycap("A")}${keycap("S")}${keycap("D")}</span>`;
 }
 
+/** The arrow-key cluster, mirroring wasdCluster(). */
+export function arrowCluster(): string {
+  return `<span class="kbd-cluster">${keycap("↑")}${keycap("←")}${keycap("↓")}${keycap("→")}</span>`;
+}
+
 /**
  * Mouse icon with the given button highlighted, or motion arrows for "move".
  * Drawn once here so every hint shares the same asset.

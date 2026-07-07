@@ -525,6 +525,7 @@ export class GameClient {
     const dtMs = Math.min(100, now - (this.lastUpdateMs || now));
     this.lastUpdateMs = now;
     const dtSec = dtMs / 1000;
+    this.input.update(dtSec);
 
     // Fixed-timestep prediction.
     if (this.predicting()) {

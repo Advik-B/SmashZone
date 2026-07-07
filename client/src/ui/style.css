@@ -299,6 +299,72 @@ body {
   display: inline-block;
 }
 
+/* --- input-mode prompt (keyboard+mouse vs keyboard+trackpad) --- */
+.mode-modal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(11, 14, 26, 0.94);
+}
+
+.mode-modal h2 {
+  font-size: 28px;
+  letter-spacing: 2px;
+  font-weight: 900;
+}
+
+.mode-cards {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.mode-card {
+  width: 280px;
+  padding: 18px;
+  border-radius: 14px;
+  border: 2px solid #3a4270;
+  background: #1a2040;
+  color: #eef1ff;
+  cursor: pointer;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font: inherit;
+  transition: transform 0.08s ease, border-color 0.08s ease;
+}
+
+.mode-card b {
+  font-size: 18px;
+  letter-spacing: 0.5px;
+}
+
+/* The focus ring is the keyboard user's cursor — make it unmissable. */
+.mode-card:focus,
+.mode-card:hover {
+  border-color: #7d8aff;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(125, 138, 255, 0.25);
+  transform: scale(1.02);
+}
+
+.linklike {
+  background: none;
+  border: none;
+  color: #7d8aff;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
 /* --- touch controls --- */
 #touch-controls {
   position: fixed;

@@ -1,7 +1,7 @@
 import type { Phase, PlayerMeta, Score } from "../net/messages";
-import { isTouchDevice } from "../game/input";
+import { isTouchDevice, savedInputMode, type InputMode } from "../game/input";
 import { SLOT_COLORS } from "../game/players";
-import { hintItem, hintRow, keycap, mouseIcon, wasdCluster } from "./icons";
+import { arrowCluster, hintItem, hintRow, keycap, mouseIcon, wasdCluster } from "./icons";
 
 function colorOf(slot: number): string {
   return "#" + SLOT_COLORS[slot % SLOT_COLORS.length].toString(16).padStart(6, "0");
@@ -10,6 +10,17 @@ function colorOf(slot: number): string {
 function menuControlsHint(): string {
   if (isTouchDevice()) {
     return `<span class="hint-row"><span class="hint-item">left stick to move · drag to aim · tap buttons to fight</span></span>`;
+  }
+  if (savedInputMode() === "keyboard") {
+    return hintRow([
+      hintItem(wasdCluster(), "move"),
+      hintItem(arrowCluster(), "aim"),
+      hintItem(keycap("J"), "light"),
+      hintItem(keycap("K"), "heavy"),
+      hintItem(keycap("Space", true), "jump"),
+      hintItem(keycap("Shift", true), "dash"),
+      hintItem(keycap("C"), "center cam"),
+    ]);
   }
   return hintRow([
     hintItem(wasdCluster(), "move"),
@@ -22,18 +33,58 @@ function menuControlsHint(): string {
 }
 
 function hudControlsHint(): string {
+  const kb = savedInputMode() === "keyboard";
   return (
     hintRow([
       hintItem(wasdCluster(), "move"),
+      ...(kb ? [hintItem(arrowCluster(), "aim")] : []),
       hintItem(keycap("Space", true), "jump ×2"),
       hintItem(keycap("Shift", true), "dash"),
     ]) +
     "<br>" +
-    hintRow([
-      hintItem(mouseIcon("left"), "light"),
-      hintItem(mouseIcon("right"), "heavy / air-slam"),
-    ])
+    hintRow(
+      kb
+        ? [
+            hintItem(keycap("J"), "light"),
+            hintItem(keycap("K"), "heavy / air-slam"),
+            hintItem(keycap("C"), "center camera"),
+          ]
+        : [
+            hintItem(mouseIcon("left"), "light"),
+            hintItem(mouseIcon("right"), "heavy / air-slam"),
+          ],
+    )
   );
+}
+
+/** The two selectable schemes, rendered as cards in the input-mode prompt. */
+function modeCard(mode: InputMode): string {
+  const title = mode === "keyboard" ? "Keyboard + Trackpad" : "Keyboard + Mouse";
+  const sub =
+    mode === "keyboard"
+      ? `<span class="hint">keyboard-only controls — no mouse needed</span>`
+      : `<span class="hint">aim with the mouse, pointer is captured</span>`;
+  const aimRow =
+    mode === "keyboard"
+      ? hintRow([
+          hintItem(arrowCluster(), "aim"),
+          hintItem(keycap("J"), "light"),
+          hintItem(keycap("K"), "heavy"),
+          hintItem(keycap("C"), "center cam"),
+        ])
+      : hintRow([
+          hintItem(mouseIcon("move"), "aim"),
+          hintItem(mouseIcon("left"), "light"),
+          hintItem(mouseIcon("right"), "heavy"),
+        ]);
+  const moveRow = hintRow([
+    hintItem(wasdCluster(), "move"),
+    hintItem(keycap("Space", true), "jump"),
+    hintItem(keycap("Shift", true), "dash"),
+  ]);
+  return `<button class="mode-card" data-mode="${mode}">
+      <b>${title}</b>${sub}${moveRow}${aimRow}
+    </button>`;
 }
 
 export interface PhaseCtx {
@@ -53,12 +104,32 @@ export class UI {
   private hudScores: HTMLElement | null = null;
   private overlay: HTMLElement | null = null;
 
+  constructor() {
+    // Enter presses START MATCH / REMATCH so a keyboard-only host never needs
+    // the pointer. A single persistent listener (the overlay's innerHTML is
+    // rebuilt every phase change, so per-button listeners wouldn't survive);
+    // deliberately not focus()-based — a focused button would be activated by
+    // Space, which is the jump key.
+    window.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.repeat) return;
+      if (e.target instanceof HTMLInputElement) return;
+      const btn = document.getElementById("h-start") ?? document.getElementById("h-rematch");
+      if (btn) {
+        e.preventDefault();
+        (btn as HTMLButtonElement).click();
+      }
+    });
+  }
+
   showMenu(
     onCreate: (name: string) => void,
     onJoin: (name: string, code: string) => void,
     error = "",
+    onChangeControls: (() => void) | null = null,
   ) {
     const saved = localStorage.getItem("sz-name") ?? "";
+    const modeLabel =
+      savedInputMode() === "keyboard" ? "keyboard + trackpad" : "keyboard + mouse";
     this.root.innerHTML = `
       <div class="menu">
         <h1>SMASHZONE</h1>
@@ -70,6 +141,11 @@ export class UI {
           <button id="m-join" class="secondary">Join</button>
         </div>
         <div class="hint">${menuControlsHint()}</div>
+        ${
+          onChangeControls
+            ? `<div class="hint">controls: ${modeLabel} <button id="m-mode" class="linklike">change</button></div>`
+            : ""
+        }
       </div>`;
     const name = () => {
       const v = (document.getElementById("m-name") as HTMLInputElement).value.trim() || "Player";
@@ -85,6 +161,61 @@ export class UI {
     (document.getElementById("m-code") as HTMLInputElement).onkeydown = (e) => {
       if (e.key === "Enter") join();
     };
+    (document.getElementById("m-name") as HTMLInputElement).onkeydown = (e) => {
+      if (e.key === "Enter") onCreate(name());
+    };
+    const modeBtn = document.getElementById("m-mode");
+    if (modeBtn && onChangeControls) modeBtn.onclick = onChangeControls;
+  }
+
+  /**
+   * Modal asking how the player aims. Fully keyboard-operable: arrows/Tab
+   * move between the cards, Enter confirms, Esc cancels. Appended on top of
+   * whatever screen is showing (never replaces it), removed on close.
+   */
+  showInputModePrompt(
+    current: InputMode | null,
+    onPick: (m: InputMode) => void,
+    onCancel: () => void,
+  ) {
+    const modal = document.createElement("div");
+    modal.className = "mode-modal";
+    modal.innerHTML = `
+      <h2>HOW DO YOU PLAY?</h2>
+      <div class="mode-cards">${modeCard("pointer")}${modeCard("keyboard")}</div>
+      <div class="hint">← → to choose · Enter to confirm · Esc to cancel</div>`;
+    this.root.appendChild(modal);
+
+    const cards = [...modal.querySelectorAll<HTMLButtonElement>(".mode-card")];
+    const close = () => modal.remove();
+    // The Enter press that opened the modal (e.g. in the name field) would
+    // otherwise activate the freshly-focused card in the same keystroke.
+    const openedAt = performance.now();
+    for (const card of cards) {
+      card.onclick = () => {
+        if (performance.now() - openedAt < 250) return;
+        close();
+        onPick(card.dataset.mode as InputMode);
+      };
+    }
+    // Keys are handled here and stopped so the game's window-level listeners
+    // never see arrows/Space while the modal is open.
+    modal.addEventListener("keydown", (e) => {
+      const focused = cards.indexOf(document.activeElement as HTMLButtonElement);
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Tab"].includes(e.key)) {
+        e.preventDefault();
+        e.stopPropagation();
+        const back = e.key === "ArrowLeft" || e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey);
+        cards[(focused + (back ? cards.length - 1 : 1)) % cards.length].focus();
+      } else if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+        onCancel();
+      } else if (e.key === "Enter" || e.key === " ") {
+        e.stopPropagation(); // let the focused button's native activation fire
+      }
+    });
+    cards[current === "keyboard" ? 1 : 0].focus();
   }
 
   showConnecting() {

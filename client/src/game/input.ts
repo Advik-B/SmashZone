@@ -12,7 +12,29 @@ export interface InputSample {
   buttons: number;
 }
 
+/**
+ * How the player aims: "pointer" is pointer-lock mouse-look, "keyboard" turns
+ * the camera with the arrow keys (for trackpad users / keyboard-only play).
+ */
+export type InputMode = "pointer" | "keyboard";
+
+export const INPUT_MODE_KEY = "sz-input-mode";
+
+/** Saved mode; touch devices and unset/invalid values read as "pointer". */
+export function savedInputMode(): InputMode {
+  if (!isTouchDevice() && localStorage.getItem(INPUT_MODE_KEY) === "keyboard") {
+    return "keyboard";
+  }
+  return "pointer";
+}
+
 const MOUSE_SENS = 0.0026;
+/** Arrow-key camera turn rates (rad/s) in keyboard mode. */
+const KB_YAW_SPEED = 2.6;
+const KB_PITCH_SPEED = 1.6;
+/** Auto-follow ease rate (1/s) and how long a manual turn suppresses it (s). */
+const FOLLOW_RATE = 1.5;
+const FOLLOW_GRACE = 1.0;
 
 function clampPitch(p: number): number {
   return Math.max(-1.2, Math.min(0.15, p));
@@ -41,13 +63,27 @@ export class InputManager {
   /** Local-space movement axes injected by the on-screen thumbstick. */
   private touchMoveX = 0;
   private touchMoveZ = 0;
+  private _mode: InputMode = "pointer";
+  /** Seconds left before auto-follow resumes after a manual arrow turn. */
+  private followGrace = 0;
   pointerLocked = false;
 
   constructor(private canvas: HTMLCanvasElement) {}
 
+  get mode(): InputMode {
+    return this._mode;
+  }
+
+  setMode(m: InputMode) {
+    this._mode = m;
+    this.followGrace = 0;
+    if (m === "keyboard" && this.pointerLocked) document.exitPointerLock();
+  }
+
   attach() {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("blur", () => this.reset());
     this.canvas.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup", this.onMouseUp);
     window.addEventListener("mousemove", this.onMouseMove);
@@ -58,6 +94,7 @@ export class InputManager {
   }
 
   requestPointerLock() {
+    if (this._mode === "keyboard") return; // arrows aim, keep the cursor free
     if (isTouchDevice()) return; // touch aims by dragging, not pointer lock
     if (!this.pointerLocked) this.canvas.requestPointerLock();
   }
@@ -107,6 +144,7 @@ export class InputManager {
     this.held = 0;
     this.touchMoveX = 0;
     this.touchMoveZ = 0;
+    this.followGrace = 0;
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
@@ -116,7 +154,13 @@ export class InputManager {
     const bit = this.bitForKey(e.code);
     this.latched |= bit;
     this.held |= bit;
-    if (bit || ["KeyW", "KeyA", "KeyS", "KeyD"].includes(e.code)) {
+    if (this._mode === "keyboard" && e.code === "KeyC") {
+      this.camYaw = this.lastFacing; // snap the camera behind the player
+    }
+    const kbCam =
+      this._mode === "keyboard" &&
+      ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyC"].includes(e.code);
+    if (bit || kbCam || ["KeyW", "KeyA", "KeyS", "KeyD"].includes(e.code)) {
       e.preventDefault();
     }
   };
@@ -147,6 +191,42 @@ export class InputManager {
     if (!this.pointerLocked) return;
     this.addCamDelta(e.movementX, e.movementY);
   };
+
+  /**
+   * Per-frame camera update for keyboard mode: arrow keys turn/pitch, and
+   * while running forward the camera gently settles behind the movement
+   * direction. Auto-follow strength scales with the *forward* component of
+   * input and is zero for pure strafe/backpedal — easing toward the movement
+   * yaw while it stays a fixed offset from the camera would otherwise spin
+   * forever (the target moves with the camera).
+   */
+  update(dtSec: number) {
+    if (this._mode !== "keyboard") return;
+    const yawIn =
+      (this.keys.has("ArrowLeft") ? 1 : 0) - (this.keys.has("ArrowRight") ? 1 : 0);
+    const pitchIn =
+      (this.keys.has("ArrowUp") ? 1 : 0) - (this.keys.has("ArrowDown") ? 1 : 0);
+    if (yawIn || pitchIn) {
+      this.camYaw += yawIn * KB_YAW_SPEED * dtSec;
+      this.camPitch = clampPitch(this.camPitch + pitchIn * KB_PITCH_SPEED * dtSec);
+      this.followGrace = FOLLOW_GRACE;
+      return;
+    }
+    if (this.followGrace > 0) {
+      this.followGrace -= dtSec;
+      return;
+    }
+    let ix = 0;
+    let iz = 0;
+    if (this.keys.has("KeyW")) iz += 1;
+    if (this.keys.has("KeyS")) iz -= 1;
+    if (this.keys.has("KeyD")) ix += 1;
+    if (this.keys.has("KeyA")) ix -= 1;
+    const len = Math.hypot(ix, iz);
+    if (len < 0.05 || iz <= 0) return;
+    const off = Math.atan2(-ix, iz); // movement yaw relative to the camera
+    this.camYaw += off * (1 - Math.exp(-(FOLLOW_RATE * iz / len) * dtSec));
+  }
 
   /** Sample one tick of input; world-space movement, camera-relative. */
   sample(): InputSample {
