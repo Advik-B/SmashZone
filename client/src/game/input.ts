@@ -18,9 +18,16 @@ function clampPitch(p: number): number {
   return Math.max(-1.2, Math.min(0.15, p));
 }
 
-/** Coarse-pointer devices (phones/tablets) get on-screen touch controls. */
+/**
+ * True when the device's *primary* pointer is coarse (phones/tablets), so
+ * hybrid laptops with a touchscreen but a mouse/trackpad keep desktop
+ * controls (pointer lock, no on-screen sticks).
+ */
 export function isTouchDevice(): boolean {
-  return window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+  if (typeof window.matchMedia === "function") {
+    return window.matchMedia("(pointer: coarse)").matches;
+  }
+  return navigator.maxTouchPoints > 0;
 }
 
 export class InputManager {

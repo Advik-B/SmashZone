@@ -20,6 +20,9 @@ export class TouchControls {
   private stickOrigin = { x: 0, y: 0 };
   private lookPointer: number | null = null;
   private lookLast = { x: 0, y: 0 };
+  /** Active pointerIds per action button, so a button stays held until the
+   *  last finger on it lifts (a button can be pressed by two fingers). */
+  private btnPointers = new Map<HTMLElement, Set<number>>();
 
   constructor(private input: InputManager) {
     this.root = document.createElement("div");
@@ -96,13 +99,17 @@ export class TouchControls {
     // --- action buttons ---
     for (const btn of this.root.querySelectorAll<HTMLElement>(".tc-btn")) {
       const bit = Number(btn.dataset.bit);
+      const active = new Set<number>();
+      this.btnPointers.set(btn, active);
       btn.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         btn.setPointerCapture(e.pointerId);
+        active.add(e.pointerId);
         btn.classList.add("pressed");
         this.input.touchPress(bit);
       });
-      const release = () => {
+      const release = (e: PointerEvent) => {
+        if (!active.delete(e.pointerId) || active.size > 0) return;
         btn.classList.remove("pressed");
         this.input.touchRelease(bit);
       };
@@ -146,9 +153,12 @@ export class TouchControls {
     this.stickBase.style.top = "";
     this.input.setTouchMove(0, 0);
     // Release anything held mid-press; pointerup won't fire once hidden.
-    for (const btn of this.root.querySelectorAll<HTMLElement>(".tc-btn.pressed")) {
-      btn.classList.remove("pressed");
-      this.input.touchRelease(Number(btn.dataset.bit));
+    for (const [btn, active] of this.btnPointers) {
+      active.clear();
+      if (btn.classList.contains("pressed")) {
+        btn.classList.remove("pressed");
+        this.input.touchRelease(Number(btn.dataset.bit));
+      }
     }
   }
 }
