@@ -3,6 +3,7 @@ import { GameClient } from "./net/gameclient";
 import {
   INPUT_MODE_KEY,
   InputManager,
+  hasSavedInputMode,
   isTouchDevice,
   savedInputMode,
   type InputMode,
@@ -47,7 +48,7 @@ async function main() {
 
   /** First-join gate: ask how the player aims before connecting. */
   const ensureMode = (): Promise<boolean> => {
-    if (touch || localStorage.getItem(INPUT_MODE_KEY)) return Promise.resolve(true);
+    if (touch || hasSavedInputMode()) return Promise.resolve(true);
     return new Promise((resolve) =>
       ui.showInputModePrompt(
         null,

@@ -20,12 +20,23 @@ export type InputMode = "pointer" | "keyboard";
 
 export const INPUT_MODE_KEY = "sz-input-mode";
 
-/** Saved mode; touch devices and unset/invalid values read as "pointer". */
+const INPUT_MODES: readonly InputMode[] = ["pointer", "keyboard"];
+
+/** The explicitly-saved mode, or null if nothing valid is stored. */
+function storedInputMode(): InputMode | null {
+  const v = localStorage.getItem(INPUT_MODE_KEY);
+  return INPUT_MODES.includes(v as InputMode) ? (v as InputMode) : null;
+}
+
+/** True once the player has saved a valid choice — gates the first-join prompt. */
+export function hasSavedInputMode(): boolean {
+  return storedInputMode() !== null;
+}
+
+/** Effective mode; touch devices and unset/invalid values read as "pointer". */
 export function savedInputMode(): InputMode {
-  if (!isTouchDevice() && localStorage.getItem(INPUT_MODE_KEY) === "keyboard") {
-    return "keyboard";
-  }
-  return "pointer";
+  if (isTouchDevice()) return "pointer";
+  return storedInputMode() ?? "pointer";
 }
 
 const MOUSE_SENS = 0.0026;
