@@ -324,12 +324,14 @@ body {
   justify-content: center;
 }
 
+/* Physical "panel" look: a recessed bottom edge like the keycap glyphs. */
 .mode-card {
   width: 280px;
   padding: 18px;
-  border-radius: 14px;
-  border: 2px solid #3a4270;
-  background: #1a2040;
+  border-radius: 8px;
+  border: 1px solid #2a3055;
+  border-bottom: 4px solid #12162c;
+  background: #191d33;
   color: #eef1ff;
   cursor: pointer;
   text-align: center;
@@ -338,7 +340,6 @@ body {
   align-items: center;
   gap: 10px;
   font: inherit;
-  transition: transform 0.08s ease, border-color 0.08s ease;
 }
 
 .mode-card b {
@@ -346,16 +347,26 @@ body {
   letter-spacing: 0.5px;
 }
 
-/* The focus ring is the keyboard user's cursor — make it unmissable. */
-.mode-card:focus,
 .mode-card:hover {
-  border-color: #7d8aff;
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(125, 138, 255, 0.25);
-  transform: scale(1.02);
+  background: #1e2340;
 }
 
-.linklike {
+/* Keyboard cursor: a plain solid outline, no neon glow. */
+.mode-card:focus,
+.mode-card:focus-visible {
+  outline: 2px solid #7d8aff;
+  outline-offset: 2px;
+}
+
+/* Presses in like a real button. */
+.mode-card:active {
+  border-bottom-width: 1px;
+  transform: translateY(3px);
+}
+
+/* Scoped above the generic `.menu button` rule so it stays a plain text link. */
+.menu .linklike {
+  width: auto;
   background: none;
   border: none;
   color: #7d8aff;
@@ -363,6 +374,47 @@ body {
   cursor: pointer;
   font: inherit;
   padding: 0;
+}
+
+/* Settings gear, styled like a physical key. Selectors are scoped with `.menu`
+ * to outrank the generic `.menu button` (gradient/260px) styling. */
+.menu .menu-gear {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid #2a3055;
+  border-bottom: 3px solid #12162c;
+  border-radius: 8px;
+  background: #191d33;
+  color: #aab2e6;
+  cursor: pointer;
+}
+
+.menu .menu-gear:hover {
+  color: #eef1ff;
+  background: #1e2340;
+}
+
+.menu .menu-gear:focus-visible {
+  outline: 2px solid #7d8aff;
+  outline-offset: 2px;
+}
+
+.menu .menu-gear:active {
+  border-bottom-width: 1px;
+  transform: translateY(2px);
+}
+
+.icon-gear {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 
 /* --- touch controls --- */

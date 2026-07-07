@@ -1,7 +1,15 @@
 import type { Phase, PlayerMeta, Score } from "../net/messages";
 import { isTouchDevice, savedInputMode, type InputMode } from "../game/input";
 import { SLOT_COLORS } from "../game/players";
-import { arrowCluster, hintItem, hintRow, keycap, mouseIcon, wasdCluster } from "./icons";
+import {
+  arrowCluster,
+  gearIcon,
+  hintItem,
+  hintRow,
+  keycap,
+  mouseIcon,
+  wasdCluster,
+} from "./icons";
 
 function colorOf(slot: number): string {
   return "#" + SLOT_COLORS[slot % SLOT_COLORS.length].toString(16).padStart(6, "0");
@@ -132,6 +140,11 @@ export class UI {
       savedInputMode() === "keyboard" ? "keyboard + trackpad" : "keyboard + mouse";
     this.root.innerHTML = `
       <div class="menu">
+        ${
+          onChangeControls
+            ? `<button id="m-settings" class="menu-gear" aria-label="Input & controls settings" title="Input & controls">${gearIcon()}</button>`
+            : ""
+        }
         <h1>SMASHZONE</h1>
         <div class="error">${error}</div>
         <input id="m-name" maxlength="16" placeholder="your name" value="${saved}" />
@@ -164,8 +177,12 @@ export class UI {
     (document.getElementById("m-name") as HTMLInputElement).onkeydown = (e) => {
       if (e.key === "Enter") onCreate(name());
     };
-    const modeBtn = document.getElementById("m-mode");
-    if (modeBtn && onChangeControls) modeBtn.onclick = onChangeControls;
+    if (onChangeControls) {
+      const modeBtn = document.getElementById("m-mode");
+      if (modeBtn) modeBtn.onclick = onChangeControls;
+      const settingsBtn = document.getElementById("m-settings");
+      if (settingsBtn) settingsBtn.onclick = onChangeControls;
+    }
   }
 
   /**
