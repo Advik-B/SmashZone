@@ -15,7 +15,14 @@ import { UI } from "./ui/ui";
 
 async function createRoom(): Promise<string> {
   const res = await fetch("/api/rooms", { method: "POST" });
-  if (!res.ok) throw new Error("failed to create room");
+  if (!res.ok) {
+    // Surface the server's reason (e.g. "server is full") when it sends one.
+    const msg = await res
+      .json()
+      .then((b) => (b && typeof b.error === "string" ? b.error : null))
+      .catch(() => null);
+    throw new Error(msg ?? "failed to create room");
+  }
   const { code } = await res.json();
   return code;
 }

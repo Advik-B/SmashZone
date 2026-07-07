@@ -77,6 +77,8 @@ pub mod player_flags {
     pub const GROUNDED: u8 = 1 << 0;
     pub const LAUNCHED: u8 = 1 << 1;
     pub const ALIVE: u8 = 1 << 2;
+    /// Player's socket dropped; slot held during the reconnect grace window.
+    pub const DISCONNECTED: u8 = 1 << 3;
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -125,6 +127,9 @@ pub enum ServerMsg {
         players: Vec<PlayerMeta>,
         phase: Phase,
         tick: u32,
+        /// Session token: pass it back as `?token=` to rejoin this same slot
+        /// (keeping id + score) after a dropped connection.
+        token: String,
     },
     PlayerJoined {
         meta: PlayerMeta,

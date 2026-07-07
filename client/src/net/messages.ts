@@ -18,6 +18,7 @@ export interface PlayerState {
   grounded: boolean;
   launched: boolean;
   alive: boolean;
+  disconnected: boolean;
   damage: number;
   powerup: number;
 }
@@ -100,6 +101,7 @@ export type ServerMsg =
       players: PlayerMeta[];
       phase: Phase;
       tick: number;
+      token: string;
     }
   | { type: "PlayerJoined"; id: number; name: string; slot: number }
   | { type: "PlayerLeft"; id: number }

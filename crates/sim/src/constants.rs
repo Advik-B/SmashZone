@@ -95,6 +95,10 @@ pub struct Constants {
     pub interp_delay_ms: u32,
     pub reconcile_pos_error: f32,
     pub reconcile_vel_error: f32,
+
+    /// How long (ticks) a disconnected player's slot + score are held so they
+    /// can rejoin mid-match before being dropped for good.
+    pub reconnect_grace_ticks: u32,
 }
 
 const RAW: &str = include_str!("../../../shared/constants.json");

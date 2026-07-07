@@ -268,6 +268,19 @@ export class Renderer {
     }
   }
 
+  /** Tear down all per-session visuals (players, pickups, projectiles,
+   *  falling debris) so a reconnect can rebuild from a fresh Welcome. */
+  reset() {
+    for (const v of this.players.values()) v.dispose();
+    this.players.clear();
+    for (const g of this.pickupMeshes.values()) g.removeFromParent();
+    this.pickupMeshes.clear();
+    for (const m of this.projMeshes.values()) m.removeFromParent();
+    this.projMeshes.clear();
+    for (const f of this.falling) f.mesh.removeFromParent();
+    this.falling = [];
+  }
+
   addPlayer(id: number, name: string, slot: number) {
     this.removePlayer(id);
     const v = new PlayerVisual(name, slot);

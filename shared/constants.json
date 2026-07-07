@@ -87,5 +87,7 @@
 
   "interpDelayMs": 120,
   "reconcilePosError": 0.05,
-  "reconcileVelError": 0.5
+  "reconcileVelError": 0.5,
+
+  "reconnectGraceTicks": 2700
 }

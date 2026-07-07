@@ -229,6 +229,11 @@ body {
   text-decoration: line-through;
 }
 
+.hud-scores .disconnected {
+  opacity: 0.5;
+  font-style: italic;
+}
+
 .lobby-panel {
   position: absolute;
   inset: 0;

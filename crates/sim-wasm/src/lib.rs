@@ -36,6 +36,7 @@ struct JsPlayerState {
     grounded: bool,
     launched: bool,
     alive: bool,
+    disconnected: bool,
     damage: u16,
     powerup: u8,
 }
@@ -217,6 +218,7 @@ enum JsServerMsg {
         players: Vec<JsPlayerMeta>,
         phase: JsPhase,
         tick: u32,
+        token: String,
     },
     PlayerJoined {
         id: u8,
@@ -266,6 +268,7 @@ fn convert_snapshot(s: &SnapshotMsg) -> JsSnapshot {
                 grounded: p.flags & protocol::player_flags::GROUNDED != 0,
                 launched: p.flags & protocol::player_flags::LAUNCHED != 0,
                 alive: p.flags & protocol::player_flags::ALIVE != 0,
+                disconnected: p.flags & protocol::player_flags::DISCONNECTED != 0,
                 damage: p.damage,
                 powerup: p.powerup,
             })
@@ -320,6 +323,7 @@ pub fn decode_server_msg(bytes: &[u8]) -> JsValue {
             players,
             phase,
             tick,
+            token,
         } => JsServerMsg::Welcome {
             your_id: *your_id,
             code: code.clone(),
@@ -333,6 +337,7 @@ pub fn decode_server_msg(bytes: &[u8]) -> JsValue {
                 .collect(),
             phase: phase.into(),
             tick: *tick,
+            token: token.clone(),
         },
         ServerMsg::PlayerJoined { meta } => JsServerMsg::PlayerJoined {
             id: meta.id,

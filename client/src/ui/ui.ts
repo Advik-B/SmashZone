@@ -15,6 +15,28 @@ function colorOf(slot: number): string {
   return "#" + SLOT_COLORS[slot % SLOT_COLORS.length].toString(16).padStart(6, "0");
 }
 
+/**
+ * Escape untrusted text (player names, server error strings) before it goes
+ * into innerHTML. Player names come straight off the wire from other clients,
+ * so treating them as markup would be a stored-XSS hole.
+ */
+export function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
 function menuControlsHint(): string {
   if (isTouchDevice()) {
     return `<span class="hint-row"><span class="hint-item">left stick to move · drag to aim · tap buttons to fight</span></span>`;
@@ -146,7 +168,7 @@ export class UI {
             : ""
         }
         <h1>SMASHZONE</h1>
-        <div class="error">${error}</div>
+        <div class="error">${esc(error)}</div>
         <input id="m-name" maxlength="16" placeholder="your name" value="${saved}" />
         <button id="m-create">Create Party</button>
         <div class="row">
@@ -285,15 +307,21 @@ export class UI {
     if (this.hudSub) this.hudSub.textContent = sub;
   }
 
-  setScores(metas: Map<number, PlayerMeta>, scores: Score[], aliveIds?: Set<number>) {
+  setScores(
+    metas: Map<number, PlayerMeta>,
+    scores: Score[],
+    aliveIds?: Set<number>,
+    disconnectedIds?: Set<number>,
+  ) {
     if (!this.hudScores) return;
     const wins = new Map(scores.map((s) => [s.id, s.wins]));
     this.hudScores.innerHTML = [...metas.values()]
       .map((m) => {
         const dead = aliveIds && !aliveIds.has(m.id);
-        return `<div class="row ${dead ? "dead" : ""}">
+        const gone = disconnectedIds?.has(m.id);
+        return `<div class="row ${dead ? "dead" : ""} ${gone ? "disconnected" : ""}">
           <div class="dot" style="background:${colorOf(m.slot)}"></div>
-          <span>${m.name}</span><b>${wins.get(m.id) ?? 0}</b>
+          <span>${esc(m.name)}${gone ? " ⟳" : ""}</span><b>${wins.get(m.id) ?? 0}</b>
         </div>`;
       })
       .join("");
@@ -311,7 +339,7 @@ export class UI {
           <div class="players">${[...ctx.metas.values()]
             .map(
               (m) =>
-                `<div class="pcard" style="--slot:${colorOf(m.slot)}">${m.name}${
+                `<div class="pcard" style="--slot:${colorOf(m.slot)}">${esc(m.name)}${
                   m.id === ctx.host ? " ★" : ""
                 }</div>`,
             )
@@ -330,12 +358,12 @@ export class UI {
       const winner = ctx.metas.get(phase.winner);
       this.overlay.innerHTML = `
         <div class="lobby-panel">
-          <div class="code" style="letter-spacing:2px">${winner?.name ?? "???"} WINS!</div>
+          <div class="code" style="letter-spacing:2px">${esc(winner?.name ?? "???")} WINS!</div>
           <div class="players">${phase.scores
             .map((s) => {
               const m = ctx.metas.get(s.id);
               return `<div class="pcard" style="--slot:${colorOf(m?.slot ?? 0)}">${
-                m?.name ?? "?"
+                esc(m?.name ?? "?")
               }<br><b style="font-size:26px">${s.wins}</b></div>`;
             })
             .join("")}</div>

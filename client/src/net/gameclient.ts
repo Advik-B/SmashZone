@@ -97,6 +97,8 @@ export class GameClient {
   private projBuffers = new Map<number, { kind: number; samples: ProjSample[] }>();
   private myPowerup = 0;
   private myPowerupTicks = 0;
+  private reconnecting = false;
+  private disconnectedIds = new Set<number>();
   destroyed = false;
 
   constructor(
@@ -109,6 +111,10 @@ export class GameClient {
   ) {
     this.conn = new Connection(code, name);
     this.conn.onMessage = (m) => this.onMessage(m);
+    this.conn.onReconnecting = (attempt) => {
+      this.reconnecting = true;
+      this.ui.setCenter("reconnecting…", `attempt ${attempt}`);
+    };
     this.conn.onClose = (reason) => {
       this.destroyed = true;
       clearInterval(this.pingTimer);
@@ -125,9 +131,24 @@ export class GameClient {
     this.conn.close();
   }
 
+  /** Dispose all per-session state so a reconnect Welcome rebuilds cleanly.
+   *  (lastScores is intentionally kept so the scoreboard survives a blip.) */
+  private resetWorld() {
+    this.sim?.free();
+    this.sim = null;
+    this.metas.clear();
+    this.buffers.clear();
+    this.projBuffers.clear();
+    this.pending = [];
+    this.aliveIds.clear();
+    this.disconnectedIds.clear();
+    this.renderer.reset();
+  }
+
   private predicting(): boolean {
     return (
       this.sim !== null &&
+      !this.reconnecting &&
       this.localAlive &&
       (this.phase.type === "Lobby" || this.phase.type === "Playing")
     );
@@ -147,8 +168,14 @@ export class GameClient {
   private onMessage(msg: ServerMsg) {
     switch (msg.type) {
       case "Welcome": {
+        // Tear down any prior session so this handler works for both the
+        // first join and a reconnect re-Welcome (rebuilt from the roster
+        // the server sends here).
+        this.resetWorld();
+        this.reconnecting = false;
         this.myId = msg.yourId;
         this.code = msg.code;
+        this.conn.setToken(msg.token);
         this.input.reset();
         this.sim = new ClientSim(this.myId);
         this.sim.add_local(0, 1.05, 0);
@@ -207,7 +234,12 @@ export class GameClient {
       id,
       wins: this.lastScores.get(id) ?? 0,
     }));
-    this.ui.setScores(this.metas, scores, this.phase.type === "Playing" ? this.aliveIds : undefined);
+    this.ui.setScores(
+      this.metas,
+      scores,
+      this.phase.type === "Playing" ? this.aliveIds : undefined,
+      this.disconnectedIds,
+    );
   }
 
   private applyPhase(phase: Phase) {
@@ -267,6 +299,7 @@ export class GameClient {
 
     // Buffer states for interpolation (all players incl. self; self is used
     // when not predicting, e.g. during countdown or while dead).
+    const nextDisc = new Set<number>();
     for (const ps of s.players) {
       let buf = this.buffers.get(ps.id);
       if (!buf) {
@@ -282,10 +315,19 @@ export class GameClient {
         powerup: ps.powerup,
       });
       if (buf.length > 40) buf.shift();
+      if (ps.disconnected) nextDisc.add(ps.id);
       if (this.phase.type === "Playing") {
         if (ps.alive) this.aliveIds.add(ps.id);
         else if (this.aliveIds.delete(ps.id)) this.refreshOverlay();
       }
+    }
+    // Dimmed-scoreboard state: refresh only when the disconnected set changes.
+    if (
+      nextDisc.size !== this.disconnectedIds.size ||
+      [...nextDisc].some((id) => !this.disconnectedIds.has(id))
+    ) {
+      this.disconnectedIds = nextDisc;
+      this.refreshOverlay();
     }
 
     // Pickups render straight from the authoritative list.
