@@ -11,6 +11,9 @@ weapon pickups (they outlast the main platform, but not forever).
 - **WASD** move (camera-relative) · **mouse** aim camera (click to lock)
 - **Space** jump / double-jump · **Shift** dash
 - **LMB / J** light attack · **RMB / K** heavy attack (in the air: ground slam)
+- **Touch devices** get on-screen controls: a floating thumbstick (bottom-left)
+  to move, drag anywhere else to aim, and jump / light / heavy / dash buttons
+  (bottom-right)
 - No health bars: every hit raises your **launch meter (%)** — knockback scales
   with it. Fall off the arena and you're out. Last robot standing wins the
   round; first to 3 rounds takes the match.
