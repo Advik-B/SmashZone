@@ -1,0 +1,91 @@
+{
+  "tickRate": 60,
+  "snapshotDivisor": 3,
+
+  "gravity": -22.0,
+
+  "moveSpeed": 8.0,
+  "groundAccel": 90.0,
+  "airAccel": 40.0,
+  "airControl": 0.6,
+  "jumpVelocity": 9.5,
+  "maxJumps": 2,
+  "coyoteTicks": 6,
+
+  "dashSpeed": 22.0,
+  "dashTicks": 9,
+  "dashCooldownTicks": 45,
+
+  "slamVelocity": -32.0,
+  "slamRadius": 3.2,
+  "slamImpulse": 11.0,
+  "slamDamage": 20,
+
+  "playerRadius": 0.45,
+  "playerHalfHeight": 0.55,
+  "playerMass": 1.0,
+
+  "lightWindupTicks": 5,
+  "lightActiveTicks": 5,
+  "lightRecoveryTicks": 10,
+  "lightReach": 1.5,
+  "lightHitRadius": 1.1,
+  "lightImpulse": 7.5,
+  "lightDamage": 12,
+
+  "heavyWindupTicks": 18,
+  "heavyActiveTicks": 6,
+  "heavyRecoveryTicks": 16,
+  "heavyReach": 1.8,
+  "heavyHitRadius": 1.35,
+  "heavyImpulse": 13.0,
+  "heavyDamage": 24,
+
+  "hitUpwardBias": 0.45,
+  "launchScalePerDamage": 0.011,
+  "launchedMinTicks": 20,
+
+  "killPlaneY": -14.0,
+  "arenaTileSize": 2.0,
+  "arenaHalfTiles": 5,
+  "arenaTileThickness": 0.5,
+  "shrinkStartTicks": 1200,
+  "shrinkRingIntervalTicks": 600,
+  "tileWarningTicks": 90,
+
+  "islandBaseTile": 6,
+  "islandTilesPerSide": 2,
+
+  "pickupFirstSpawnTicks": 480,
+  "pickupSpawnIntervalTicks": 480,
+  "pickupRadius": 1.3,
+  "powerupDurationTicks": 480,
+  "hammerMult": 2.5,
+  "anchorMult": 0.35,
+  "gunCooldownTicks": 20,
+  "gunSpeed": 28.0,
+  "gunImpulse": 6.5,
+  "gunDamage": 8,
+  "gunTtlTicks": 75,
+  "bombCooldownTicks": 45,
+  "bombThrowSpeed": 10.0,
+  "bombThrowUp": 7.0,
+  "bombFuseTicks": 120,
+  "bombRadius": 3.5,
+  "bombImpulse": 14.0,
+  "bombDamage": 26,
+
+  "roundCountdownTicks": 180,
+  "roundEndPauseTicks": 240,
+  "roundsToWin": 3,
+  "respawnHeight": 3.0,
+
+  "maxPlayers": 8,
+
+  "posQuantScale": 256.0,
+  "velQuantScale": 64.0,
+
+  "interpDelayMs": 120,
+  "reconcilePosError": 0.05,
+  "reconcileVelError": 0.5
+}

@@ -1,0 +1,10 @@
+[package]
+name = "sim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rapier3d.workspace = true
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
