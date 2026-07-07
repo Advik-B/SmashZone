@@ -1,8 +1,9 @@
 import init, { ClientSim } from "./wasm/pkg/sim_wasm";
 import { GameClient } from "./net/gameclient";
-import { InputManager } from "./game/input";
+import { InputManager, isTouchDevice } from "./game/input";
 import { loadCharacterModel } from "./game/players";
 import { Renderer } from "./game/renderer";
+import { TouchControls } from "./game/touch";
 import { UI } from "./ui/ui";
 
 async function createRoom(): Promise<string> {
@@ -25,6 +26,7 @@ async function main() {
   }
   const input = new InputManager(canvas);
   input.attach();
+  const touch = isTouchDevice() ? new TouchControls(input) : null;
   const ui = new UI();
 
   let client: GameClient | null = null;
@@ -33,6 +35,7 @@ async function main() {
 
   const showMenu = (error = "") => {
     document.exitPointerLock?.();
+    touch?.hide();
     ui.showMenu(
       async (name) => {
         try {
@@ -49,6 +52,7 @@ async function main() {
 
   const start = (name: string, code: string) => {
     ui.showConnecting();
+    touch?.show();
     client?.destroy();
     client = new GameClient(code, name, renderer, input, ui, (reason) => {
       client = null;

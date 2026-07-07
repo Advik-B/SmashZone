@@ -1,8 +1,39 @@
 import type { Phase, PlayerMeta, Score } from "../net/messages";
+import { isTouchDevice } from "../game/input";
 import { SLOT_COLORS } from "../game/players";
+import { hintItem, hintRow, keycap, mouseIcon, wasdCluster } from "./icons";
 
 function colorOf(slot: number): string {
   return "#" + SLOT_COLORS[slot % SLOT_COLORS.length].toString(16).padStart(6, "0");
+}
+
+function menuControlsHint(): string {
+  if (isTouchDevice()) {
+    return `<span class="hint-row"><span class="hint-item">left stick to move · drag to aim · tap buttons to fight</span></span>`;
+  }
+  return hintRow([
+    hintItem(wasdCluster(), "move"),
+    hintItem(mouseIcon("move"), "aim"),
+    hintItem(mouseIcon("left"), "light"),
+    hintItem(mouseIcon("right"), "heavy"),
+    hintItem(keycap("Space", true), "jump"),
+    hintItem(keycap("Shift", true), "dash"),
+  ]);
+}
+
+function hudControlsHint(): string {
+  return (
+    hintRow([
+      hintItem(wasdCluster(), "move"),
+      hintItem(keycap("Space", true), "jump ×2"),
+      hintItem(keycap("Shift", true), "dash"),
+    ]) +
+    "<br>" +
+    hintRow([
+      hintItem(mouseIcon("left"), "light"),
+      hintItem(mouseIcon("right"), "heavy / air-slam"),
+    ])
+  );
 }
 
 export interface PhaseCtx {
@@ -38,7 +69,7 @@ export class UI {
           <input id="m-code" maxlength="4" placeholder="CODE" />
           <button id="m-join" class="secondary">Join</button>
         </div>
-        <div class="hint">WASD move &middot; mouse aim &middot; LMB/RMB attack &middot; Space jump &middot; Shift dash</div>
+        <div class="hint">${menuControlsHint()}</div>
       </div>`;
     const name = () => {
       const v = (document.getElementById("m-name") as HTMLInputElement).value.trim() || "Player";
@@ -68,7 +99,7 @@ export class UI {
       <div class="hud-powerup" id="h-powerup"></div>
       <div class="hud-center" id="h-center"><div id="h-title"></div><div class="hud-sub" id="h-sub"></div></div>
       <div id="h-overlay"></div>
-      <div class="controls-hint">WASD move · Space jump ×2 · Shift dash<br>LMB light · RMB heavy / air-slam</div>`;
+      ${isTouchDevice() ? "" : `<div class="controls-hint">${hudControlsHint()}</div>`}`;
     this.hudDamage = document.getElementById("h-damage");
     this.hudCenter = document.getElementById("h-title");
     this.hudSub = document.getElementById("h-sub");

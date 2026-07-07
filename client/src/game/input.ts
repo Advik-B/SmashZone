@@ -14,6 +14,22 @@ export interface InputSample {
 
 const MOUSE_SENS = 0.0026;
 
+function clampPitch(p: number): number {
+  return Math.max(-1.2, Math.min(0.15, p));
+}
+
+/**
+ * True when the device's *primary* pointer is coarse (phones/tablets), so
+ * hybrid laptops with a touchscreen but a mouse/trackpad keep desktop
+ * controls (pointer lock, no on-screen sticks).
+ */
+export function isTouchDevice(): boolean {
+  if (typeof window.matchMedia === "function") {
+    return window.matchMedia("(pointer: coarse)").matches;
+  }
+  return navigator.maxTouchPoints > 0;
+}
+
 export class InputManager {
   camYaw = Math.PI; // behind the player looking at center
   camPitch = -0.45;
@@ -22,6 +38,9 @@ export class InputManager {
   private latched = 0;
   private held = 0;
   private lastFacing = 0;
+  /** Local-space movement axes injected by the on-screen thumbstick. */
+  private touchMoveX = 0;
+  private touchMoveZ = 0;
   pointerLocked = false;
 
   constructor(private canvas: HTMLCanvasElement) {}
@@ -39,7 +58,30 @@ export class InputManager {
   }
 
   requestPointerLock() {
+    if (isTouchDevice()) return; // touch aims by dragging, not pointer lock
     if (!this.pointerLocked) this.canvas.requestPointerLock();
+  }
+
+  /** Thumbstick input: x = strafe right, z = forward, each in [-1, 1]. */
+  setTouchMove(x: number, z: number) {
+    this.touchMoveX = x;
+    this.touchMoveZ = z;
+  }
+
+  /** Press a button from the touch overlay (latched like a key press). */
+  touchPress(bit: number) {
+    this.latched |= bit;
+    this.held |= bit;
+  }
+
+  touchRelease(bit: number) {
+    this.held &= ~bit;
+  }
+
+  /** Rotate the camera by a screen-space drag delta (pixels). */
+  addCamDelta(dx: number, dy: number, sens = MOUSE_SENS) {
+    this.camYaw -= dx * sens;
+    this.camPitch = clampPitch(this.camPitch - dy * sens);
   }
 
   private bitForKey(code: string): number {
@@ -63,6 +105,8 @@ export class InputManager {
     this.keys.clear();
     this.latched = 0;
     this.held = 0;
+    this.touchMoveX = 0;
+    this.touchMoveZ = 0;
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
@@ -101,9 +145,7 @@ export class InputManager {
 
   private onMouseMove = (e: MouseEvent) => {
     if (!this.pointerLocked) return;
-    this.camYaw -= e.movementX * MOUSE_SENS;
-    this.camPitch -= e.movementY * MOUSE_SENS;
-    this.camPitch = Math.max(-1.2, Math.min(0.15, this.camPitch));
+    this.addCamDelta(e.movementX, e.movementY);
   };
 
   /** Sample one tick of input; world-space movement, camera-relative. */
@@ -114,6 +156,8 @@ export class InputManager {
     if (this.keys.has("KeyS")) iz -= 1;
     if (this.keys.has("KeyD")) ix += 1;
     if (this.keys.has("KeyA")) ix -= 1;
+    ix += this.touchMoveX;
+    iz += this.touchMoveZ;
 
     // Camera forward on the ground plane is (sin(camYaw), cos(camYaw)).
     const fx = Math.sin(this.camYaw);

@@ -26,10 +26,21 @@ body {
   position: fixed;
   inset: 0;
   pointer-events: none;
+  z-index: 10;
 }
 
 #ui > * {
   pointer-events: auto;
+}
+
+/* Informational HUD text must never swallow clicks/touches. */
+#ui > .hud-room,
+#ui > .hud-scores,
+#ui > .hud-damage,
+#ui > .hud-powerup,
+#ui > .hud-center,
+#ui > .controls-hint {
+  pointer-events: none;
 }
 
 .menu {
@@ -234,7 +245,207 @@ body {
   bottom: 12px;
   right: 16px;
   font-size: 13px;
-  opacity: 0.5;
+  opacity: 0.65;
   text-align: right;
-  line-height: 1.5;
+  line-height: 2;
+}
+
+/* Control-hint icon assets (see src/ui/icons.ts) */
+.hint-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.hint-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 5px;
+  border: 1px solid rgba(238, 241, 255, 0.5);
+  border-bottom-width: 3px;
+  background: rgba(238, 241, 255, 0.12);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.kbd-wide {
+  padding: 0 10px;
+}
+
+.kbd-cluster {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.icon-mouse {
+  width: 15px;
+  height: 18px;
+  display: inline-block;
+}
+
+/* --- touch controls --- */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#touch-controls .tc-look {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+
+#touch-controls .tc-stick-zone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 45%;
+  height: 65%;
+  touch-action: none;
+}
+
+#touch-controls .tc-stick-base {
+  position: absolute;
+  left: 20%;
+  top: 76%;
+  width: 124px;
+  height: 124px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid rgba(238, 241, 255, 0.35);
+  background: rgba(20, 24, 48, 0.35);
+  backdrop-filter: blur(2px);
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+#touch-controls .tc-stick-base.active {
+  opacity: 0.9;
+  transition: none;
+}
+
+#touch-controls .tc-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: rgba(238, 241, 255, 0.75);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  transform: translate(-50%, -50%);
+}
+
+#touch-controls .tc-buttons {
+  position: absolute;
+  right: calc(14px + env(safe-area-inset-right));
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  width: 190px;
+  height: 190px;
+}
+
+#touch-controls .tc-btn {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid rgba(238, 241, 255, 0.4);
+  background: rgba(20, 24, 48, 0.5);
+  color: rgba(238, 241, 255, 0.9);
+  font-family: inherit;
+  font-weight: 800;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+#touch-controls .tc-btn svg {
+  width: 46%;
+  height: 46%;
+}
+
+#touch-controls .tc-btn.pressed {
+  background: rgba(255, 94, 125, 0.55);
+  border-color: rgba(255, 255, 255, 0.8);
+  transform: scale(0.94);
+}
+
+#touch-controls .tc-jump {
+  width: 88px;
+  height: 88px;
+  right: 0;
+  bottom: 0;
+  font-size: 15px;
+  letter-spacing: 1px;
+}
+
+#touch-controls .tc-light {
+  width: 62px;
+  height: 62px;
+  right: 104px;
+  bottom: 10px;
+  color: #ffd76e;
+}
+
+#touch-controls .tc-heavy {
+  width: 62px;
+  height: 62px;
+  right: 84px;
+  bottom: 86px;
+  color: #ff8b9e;
+}
+
+#touch-controls .tc-dash {
+  width: 54px;
+  height: 54px;
+  right: 4px;
+  bottom: 104px;
+  color: #9fd8ff;
+}
+
+/* Compact HUD on small screens */
+@media (max-width: 820px) {
+  .hud-damage {
+    font-size: 38px;
+    bottom: 18px;
+  }
+
+  .hud-powerup {
+    font-size: 17px;
+    bottom: 64px;
+  }
+
+  .hud-center {
+    font-size: 38px;
+  }
+
+  .hud-sub {
+    font-size: 17px;
+  }
+
+  .menu h1 {
+    font-size: 44px;
+  }
 }
