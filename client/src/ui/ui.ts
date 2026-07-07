@@ -311,14 +311,14 @@ export class UI {
           <div class="players">${[...ctx.metas.values()]
             .map(
               (m) =>
-                `<div class="pcard" style="border-color:${colorOf(m.slot)}">${m.name}${
+                `<div class="pcard" style="--slot:${colorOf(m.slot)}">${m.name}${
                   m.id === ctx.host ? " ★" : ""
                 }</div>`,
             )
             .join("")}</div>
           ${
             isHost
-              ? `<button id="h-start" class="menu-btn" style="font-size:22px;padding:14px 44px;border-radius:12px;border:none;cursor:pointer;background:linear-gradient(135deg,#ff5e7d,#a15eff);color:#fff;font-weight:800">START MATCH</button>`
+              ? `<button id="h-start" class="big-btn">START MATCH</button>`
               : `<div class="hint">waiting for the host to start…</div>`
           }
           <div class="hint">you can run around and brawl while you wait — falling off just respawns you</div>
@@ -334,14 +334,14 @@ export class UI {
           <div class="players">${phase.scores
             .map((s) => {
               const m = ctx.metas.get(s.id);
-              return `<div class="pcard" style="border-color:${colorOf(m?.slot ?? 0)}">${
+              return `<div class="pcard" style="--slot:${colorOf(m?.slot ?? 0)}">${
                 m?.name ?? "?"
               }<br><b style="font-size:26px">${s.wins}</b></div>`;
             })
             .join("")}</div>
           ${
             isHost
-              ? `<button id="h-rematch" style="font-size:22px;padding:14px 44px;border-radius:12px;border:none;cursor:pointer;background:linear-gradient(135deg,#ff5e7d,#a15eff);color:#fff;font-weight:800">REMATCH</button>`
+              ? `<button id="h-rematch" class="big-btn">REMATCH</button>`
               : `<div class="hint">waiting for the host…</div>`
           }
         </div>`;
