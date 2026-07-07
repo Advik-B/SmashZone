@@ -85,7 +85,11 @@ async fn main() {
         .fallback(serve_static)
         .with_state(state);
 
-    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    // BIND_ADDR wins; else PORT (Render/Heroku-style PaaS); else :8080.
+    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| {
+        let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
+        format!("0.0.0.0:{port}")
+    });
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     tracing::info!("gameserver listening on {addr}");
     axum::serve(listener, app).await.unwrap();

@@ -33,6 +33,6 @@ FROM debian:bookworm-slim
 WORKDIR /app
 COPY --from=server-builder /app/target/release/gameserver ./gameserver
 ENV RUST_LOG=info
-ENV BIND_ADDR=0.0.0.0:8080
+# Listens on $PORT (Render-style PaaS) or BIND_ADDR; defaults to 0.0.0.0:8080.
 EXPOSE 8080
 CMD ["./gameserver"]
