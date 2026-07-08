@@ -28,6 +28,11 @@ pub fn attack_phase(st: &CharState) -> AttackPhase {
             c.heavy_active_ticks,
             c.heavy_recovery_ticks,
         ),
+        AttackKind::AirLight => (
+            c.air_light_windup_ticks,
+            c.air_light_active_ticks,
+            c.air_light_recovery_ticks,
+        ),
     };
     let t = st.attack.ticks;
     if t < w {
@@ -59,6 +64,9 @@ pub fn tick_movement(body: &mut RigidBody, st: &mut CharState, input: &PlayerInp
     }
     if st.fire_cd > 0 {
         st.fire_cd -= 1;
+    }
+    if st.invuln > 0 {
+        st.invuln -= 1;
     }
     if st.powerup_ticks > 0 {
         st.powerup_ticks -= 1;
@@ -112,6 +120,7 @@ pub fn tick_movement(body: &mut RigidBody, st: &mut CharState, input: &PlayerInp
         st.dash_dir = [dir.x, dir.z];
         st.dash_ticks = c.dash_ticks;
         st.dash_cd = c.dash_cooldown_ticks;
+        st.invuln = 0; // going on the offensive drops spawn protection
     }
     if st.dash_ticks > 0 {
         st.dash_ticks -= 1;
@@ -130,6 +139,7 @@ pub fn tick_movement(body: &mut RigidBody, st: &mut CharState, input: &PlayerInp
     // -- slam (heavy while airborne) --
     if pressed & buttons::HEAVY != 0 && !st.grounded && can_act {
         st.slamming = true;
+        st.invuln = 0;
     }
     if st.slamming {
         let v = *body.linvel();
@@ -142,6 +152,10 @@ pub fn tick_movement(body: &mut RigidBody, st: &mut CharState, input: &PlayerInp
     // -- attacks / firing --
     let ranged = st.powerup == powerup::GUN || st.powerup == powerup::BOMB;
     if can_act {
+        // Any attack input drops spawn protection (offense cancels invuln).
+        if pressed & (buttons::LIGHT | buttons::HEAVY) != 0 {
+            st.invuln = 0;
+        }
         if pressed & buttons::LIGHT != 0 {
             if ranged {
                 // Holding a gun/bomb: LIGHT fires instead of swinging.
@@ -154,7 +168,12 @@ pub fn tick_movement(body: &mut RigidBody, st: &mut CharState, input: &PlayerInp
                     };
                 }
             } else {
-                st.attack.kind = AttackKind::Light;
+                // In the air, LIGHT is a fast weak 360° spin (AirLight).
+                st.attack.kind = if st.grounded {
+                    AttackKind::Light
+                } else {
+                    AttackKind::AirLight
+                };
                 st.attack.ticks = 0;
                 st.attack.hit_mask = 0;
             }
@@ -185,18 +204,25 @@ pub fn tick_movement(body: &mut RigidBody, st: &mut CharState, input: &PlayerInp
         }
     }
 
+    // -- directional influence while launched --
+    // A small additive nudge steers the launch trajectory without braking it
+    // toward walk speed (which the old "steer toward target" code did).
+    if st.launched > 0 {
+        let v = *body.linvel();
+        let cur = vector![v.x, 0.0, v.z];
+        let nv = cur + move_vec * c.di_accel * dt;
+        body.set_linvel(vector![nv.x, v.y, nv.z], true);
+        return;
+    }
+
     // -- horizontal velocity control --
     let attack_slow = if attacking { 0.35 } else { 1.0 };
     let target = move_vec * c.move_speed * attack_slow;
-    let mut accel = if st.grounded {
+    let accel = if st.grounded {
         c.ground_accel
     } else {
         c.air_accel * c.air_control
     };
-    if st.launched > 0 {
-        // Tiny amount of recovery control while flying.
-        accel = c.air_accel * 0.15;
-    }
     let v = *body.linvel();
     let cur = vector![v.x, 0.0, v.z];
     let mut delta = target - cur;

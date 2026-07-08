@@ -23,6 +23,7 @@ struct JsPlayerMeta {
     id: u8,
     name: String,
     slot: u8,
+    bot: bool,
 }
 
 #[derive(Serialize)]
@@ -36,6 +37,8 @@ struct JsPlayerState {
     grounded: bool,
     launched: bool,
     alive: bool,
+    disconnected: bool,
+    intangible: bool,
     damage: u16,
     powerup: u8,
 }
@@ -217,11 +220,13 @@ enum JsServerMsg {
         players: Vec<JsPlayerMeta>,
         phase: JsPhase,
         tick: u32,
+        token: String,
     },
     PlayerJoined {
         id: u8,
         name: String,
         slot: u8,
+        bot: bool,
     },
     PlayerLeft {
         id: u8,
@@ -266,6 +271,8 @@ fn convert_snapshot(s: &SnapshotMsg) -> JsSnapshot {
                 grounded: p.flags & protocol::player_flags::GROUNDED != 0,
                 launched: p.flags & protocol::player_flags::LAUNCHED != 0,
                 alive: p.flags & protocol::player_flags::ALIVE != 0,
+                disconnected: p.flags & protocol::player_flags::DISCONNECTED != 0,
+                intangible: p.flags & protocol::player_flags::INTANGIBLE != 0,
                 damage: p.damage,
                 powerup: p.powerup,
             })
@@ -320,6 +327,7 @@ pub fn decode_server_msg(bytes: &[u8]) -> JsValue {
             players,
             phase,
             tick,
+            token,
         } => JsServerMsg::Welcome {
             your_id: *your_id,
             code: code.clone(),
@@ -329,15 +337,18 @@ pub fn decode_server_msg(bytes: &[u8]) -> JsValue {
                     id: m.id,
                     name: m.name.clone(),
                     slot: m.slot,
+                    bot: m.bot,
                 })
                 .collect(),
             phase: phase.into(),
             tick: *tick,
+            token: token.clone(),
         },
         ServerMsg::PlayerJoined { meta } => JsServerMsg::PlayerJoined {
             id: meta.id,
             name: meta.name.clone(),
             slot: meta.slot,
+            bot: meta.bot,
         },
         ServerMsg::PlayerLeft { id } => JsServerMsg::PlayerLeft { id: *id },
         ServerMsg::PhaseChange { phase, tick } => JsServerMsg::PhaseChange {
@@ -377,6 +388,16 @@ pub fn encode_rematch() -> Vec<u8> {
 #[wasm_bindgen]
 pub fn encode_ping(t: u32) -> Vec<u8> {
     protocol::encode(&ClientMsg::Ping { t })
+}
+
+#[wasm_bindgen]
+pub fn encode_add_bot() -> Vec<u8> {
+    protocol::encode(&ClientMsg::AddBot)
+}
+
+#[wasm_bindgen]
+pub fn encode_remove_bot(id: u8) -> Vec<u8> {
+    protocol::encode(&ClientMsg::RemoveBot { id })
 }
 
 // ---- Prediction sim ----

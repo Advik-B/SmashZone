@@ -18,21 +18,30 @@ use tokio::sync::{mpsc, oneshot};
 
 pub struct JoinAck {
     pub id: PlayerId,
+    /// Connection generation; commands carrying a stale epoch (from a socket
+    /// that a reconnect superseded) are ignored by the room.
+    pub epoch: u32,
     pub out_rx: mpsc::UnboundedReceiver<Vec<u8>>,
 }
 
 pub enum RoomCmd {
     Join {
         name: String,
+        /// Present when the client is trying to rejoin an existing slot.
+        token: Option<String>,
         resp: oneshot::Sender<Result<JoinAck, String>>,
     },
     Msg {
         id: PlayerId,
+        epoch: u32,
         msg: ClientMsg,
     },
     Leave {
         id: PlayerId,
+        epoch: u32,
     },
+    /// Server is shutting down: tell clients to rejoin, then stop the task.
+    Shutdown,
 }
 
 pub type RoomHandle = mpsc::UnboundedSender<RoomCmd>;
@@ -48,11 +57,47 @@ struct RoomPlayer {
     score: u8,
     /// Participating in the current round (spawned at round start).
     in_round: bool,
+    /// Session token for reconnecting into this slot.
+    token: String,
+    /// False while the socket is dropped but the slot is held for a rejoin.
+    connected: bool,
+    /// Connection generation, bumped on every (re)connect.
+    epoch: u32,
+    /// Ticks spent disconnected (for grace-window expiry).
+    gone_ticks: u32,
+    /// Server-controlled practice bot (no real socket).
+    bot: bool,
 }
 
 /// If a client stops sending inputs for this long (throttled tab, hiccup),
 /// stop replaying their last held input so they don't walk off the world.
 const INPUT_STALE_TICKS: u16 = 30;
+
+/// Max room commands processed per tick, so a command burst can't starve the
+/// 60 Hz sim loop.
+const CMD_DRAIN_CAP: u32 = 512;
+
+/// Generate a random session token (16 hex chars) for reconnect.
+fn gen_token() -> String {
+    format!("{:016x}", rand::rng().random::<u64>())
+}
+
+/// Strip control characters and clamp a player-supplied name to a safe length.
+/// The client escapes names before rendering; this is defense in depth so
+/// control chars (NUL, newlines) never reach clients in the first place.
+fn sanitize_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(16)
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        "Player".to_string()
+    } else {
+        clean.to_string()
+    }
+}
 
 enum RoomPhase {
     Lobby,
@@ -66,6 +111,8 @@ struct Room {
     code: String,
     sim: GameSim,
     players: BTreeMap<PlayerId, RoomPlayer>,
+    /// AI brains for bot players (keyed by the same PlayerId).
+    bots: BTreeMap<PlayerId, crate::bot::BotBrain>,
     phase: RoomPhase,
     tick: u32,
     pending_events: Vec<SimEvent>,
@@ -74,8 +121,17 @@ struct Room {
 }
 
 impl Room {
+    /// Host = lowest-id human (bots can never host).
     fn host(&self) -> Option<PlayerId> {
-        self.players.keys().next().copied()
+        self.players
+            .iter()
+            .find(|(_, p)| !p.bot)
+            .map(|(&id, _)| id)
+    }
+
+    /// Count of real (non-bot) players, connected or in the reconnect window.
+    fn humans(&self) -> usize {
+        self.players.values().filter(|p| !p.bot).count()
     }
 
     fn phase_msg(&self) -> Phase {
@@ -136,7 +192,22 @@ impl Room {
         spots[(self.tick as usize / 7) % spots.len()]
     }
 
-    fn handle_join(&mut self, name: String) -> Result<JoinAck, String> {
+    fn handle_join(&mut self, name: String, token: Option<String>) -> Result<JoinAck, String> {
+        // Reconnect: a matching token takes over the existing slot, keeping the
+        // player's id + score. Works even if the old socket still looks alive
+        // (the common half-dead-socket case) — the epoch bump makes any command
+        // from the superseded connection a no-op.
+        if let Some(tok) = token {
+            let existing = self
+                .players
+                .iter()
+                .find(|(_, p)| p.token == tok)
+                .map(|(&id, _)| id);
+            if let Some(id) = existing {
+                return Ok(self.reconnect(id));
+            }
+        }
+
         let c = consts();
         if self.players.len() >= c.max_players as usize {
             return Err("room is full".into());
@@ -148,8 +219,9 @@ impl Room {
 
         let meta = PlayerMeta {
             id,
-            name: name.chars().take(16).collect(),
+            name: sanitize_name(&name),
             slot: id,
+            bot: false,
         };
         // Announce to existing players first.
         self.broadcast(&ServerMsg::PlayerJoined { meta: meta.clone() });
@@ -161,6 +233,7 @@ impl Room {
             self.sim.kill(id);
         }
 
+        let token = gen_token();
         self.players.insert(
             id,
             RoomPlayer {
@@ -172,6 +245,11 @@ impl Room {
                 starved: 0,
                 score: 0,
                 in_round: false,
+                token: token.clone(),
+                connected: true,
+                epoch: 0,
+                gone_ticks: 0,
+                bot: false,
             },
         );
 
@@ -181,21 +259,157 @@ impl Room {
             players: self.players.values().map(|p| p.meta.clone()).collect(),
             phase: self.phase_msg(),
             tick: self.tick,
+            token,
         };
         let _ = tx.send(encode(&welcome));
         tracing::info!("room {}: player {id} joined", self.code);
-        Ok(JoinAck { id, out_rx })
+        Ok(JoinAck { id, epoch: 0, out_rx })
+    }
+
+    /// Take over an existing slot: swap in the new socket, bump the epoch, and
+    /// resend Welcome so the client rebuilds its world.
+    fn reconnect(&mut self, id: PlayerId) -> JoinAck {
+        let (tx, out_rx) = mpsc::unbounded_channel();
+        let (epoch, token) = {
+            let p = self.players.get_mut(&id).unwrap();
+            p.epoch = p.epoch.wrapping_add(1);
+            p.tx = tx.clone();
+            p.connected = true;
+            p.gone_ticks = 0;
+            p.inputs.clear();
+            p.last_input = PlayerInput::default();
+            (p.epoch, p.token.clone())
+        };
+        let welcome = ServerMsg::Welcome {
+            your_id: id,
+            code: self.code.clone(),
+            players: self.players.values().map(|p| p.meta.clone()).collect(),
+            phase: self.phase_msg(),
+            tick: self.tick,
+            token,
+        };
+        let _ = tx.send(encode(&welcome));
+        tracing::info!("room {}: player {id} reconnected (epoch {epoch})", self.code);
+        JoinAck { id, epoch, out_rx }
+    }
+
+    /// True if a command's connection generation matches the live player. Stale
+    /// commands from a socket that a reconnect superseded are dropped.
+    fn epoch_ok(&self, id: PlayerId, epoch: u32) -> bool {
+        self.players.get(&id).map(|p| p.epoch == epoch).unwrap_or(false)
     }
 
     fn handle_leave(&mut self, id: PlayerId) {
-        if self.players.remove(&id).is_some() {
+        if !self.players.contains_key(&id) {
+            return;
+        }
+        if matches!(self.phase, RoomPhase::Lobby) {
+            // Lobby: nothing to preserve — free the slot immediately so the
+            // host/start flow stays unblocked.
+            self.players.remove(&id);
             self.sim.remove_player(id);
             self.broadcast(&ServerMsg::PlayerLeft { id });
             // Host may have changed (host = lowest id present).
+            self.send_phase();
+            tracing::info!("room {}: player {id} left (lobby)", self.code);
+        } else {
+            // Mid-match: hold the slot + score for the grace window so the
+            // player can rejoin. Their body keeps simulating on neutral input.
+            let p = self.players.get_mut(&id).unwrap();
+            p.connected = false;
+            p.gone_ticks = 0;
+            p.inputs.clear();
+            p.last_input = PlayerInput::default();
+            tracing::info!("room {}: player {id} disconnected (grace)", self.code);
+        }
+    }
+
+    /// Drop players whose reconnect grace window has elapsed.
+    fn sweep_disconnected(&mut self) {
+        let grace = consts().reconnect_grace_ticks;
+        let mut expired = Vec::new();
+        for (&id, p) in self.players.iter_mut() {
+            if !p.connected {
+                p.gone_ticks = p.gone_ticks.saturating_add(1);
+                if p.gone_ticks >= grace {
+                    expired.push(id);
+                }
+            }
+        }
+        for id in expired {
+            self.players.remove(&id);
+            self.sim.remove_player(id);
+            self.broadcast(&ServerMsg::PlayerLeft { id });
             if matches!(self.phase, RoomPhase::Lobby) {
                 self.send_phase();
             }
-            tracing::info!("room {}: player {id} left", self.code);
+            tracing::info!("room {}: player {id} dropped (reconnect grace elapsed)", self.code);
+        }
+    }
+
+    /// Add a practice bot (host + lobby gated by the caller).
+    fn handle_add_bot(&mut self) {
+        let c = consts();
+        if self.players.len() >= c.max_players as usize {
+            return;
+        }
+        let id = (0..c.max_players)
+            .find(|i| !self.players.contains_key(i))
+            .unwrap();
+        let meta = PlayerMeta {
+            id,
+            name: format!("BOT {id}"),
+            slot: id,
+            bot: true,
+        };
+        self.broadcast(&ServerMsg::PlayerJoined { meta: meta.clone() });
+        let spawn = self.random_spawn();
+        self.sim.add_player(id, false, spawn);
+        if !matches!(self.phase, RoomPhase::Lobby) {
+            self.sim.kill(id);
+        }
+        // Bots have no socket: a dummy channel whose receiver is dropped.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        self.players.insert(
+            id,
+            RoomPlayer {
+                meta,
+                tx,
+                inputs: VecDeque::new(),
+                last_input: PlayerInput::default(),
+                last_seq: 0,
+                starved: 0,
+                score: 0,
+                in_round: false,
+                token: String::new(),
+                connected: true,
+                epoch: 0,
+                gone_ticks: 0,
+                bot: true,
+            },
+        );
+        self.bots.insert(id, crate::bot::BotBrain::new(id));
+        tracing::info!("room {}: bot {id} added", self.code);
+    }
+
+    fn handle_remove_bot(&mut self, id: PlayerId) {
+        if self.players.get(&id).map(|p| p.bot).unwrap_or(false) {
+            self.players.remove(&id);
+            self.bots.remove(&id);
+            self.sim.remove_player(id);
+            self.broadcast(&ServerMsg::PlayerLeft { id });
+            tracing::info!("room {}: bot {id} removed", self.code);
+        }
+    }
+
+    /// Remove every bot (called when the last human leaves so the room can idle).
+    fn despawn_all_bots(&mut self) {
+        let ids: Vec<PlayerId> = self.bots.keys().copied().collect();
+        for id in ids {
+            self.players.remove(&id);
+            self.bots.remove(&id);
+            self.sim.remove_player(id);
+            self.broadcast(&ServerMsg::PlayerLeft { id });
         }
     }
 
@@ -230,6 +444,16 @@ impl Room {
             ClientMsg::Ping { t } => {
                 if let Some(p) = self.players.get(&id) {
                     let _ = p.tx.send(encode(&ServerMsg::Pong { t }));
+                }
+            }
+            ClientMsg::AddBot => {
+                if Some(id) == self.host() && matches!(self.phase, RoomPhase::Lobby) {
+                    self.handle_add_bot();
+                }
+            }
+            ClientMsg::RemoveBot { id: bot_id } => {
+                if Some(id) == self.host() && matches!(self.phase, RoomPhase::Lobby) {
+                    self.handle_remove_bot(bot_id);
                 }
             }
         }
@@ -289,8 +513,15 @@ impl Room {
         let c = consts();
         self.tick += 1;
 
-        // Nobody here: fall back to lobby instead of cycling rounds.
-        if self.players.is_empty() {
+        // Drop players whose reconnect grace window has elapsed.
+        self.sweep_disconnected();
+
+        // No humans left: drop any bots and idle back to lobby (so a bot-only
+        // room can't tick forever, and idle cleanup can reclaim it).
+        if self.humans() == 0 {
+            if !self.bots.is_empty() {
+                self.despawn_all_bots();
+            }
             if !matches!(self.phase, RoomPhase::Lobby) {
                 self.phase = RoomPhase::Lobby;
             }
@@ -328,6 +559,9 @@ impl Room {
         let mut inputs: BTreeMap<PlayerId, PlayerInput> = BTreeMap::new();
         let allowed = self.movement_allowed();
         for (&id, p) in self.players.iter_mut() {
+            if p.bot {
+                continue; // bot inputs come from the brains below
+            }
             if let Some(msg) = p.inputs.pop_front() {
                 p.starved = 0;
                 p.last_seq = msg.seq;
@@ -345,6 +579,14 @@ impl Room {
             }
             if allowed {
                 inputs.insert(id, p.last_input);
+            }
+        }
+        // Bot brains produce their inputs like any other player.
+        if allowed {
+            let bot_ids: Vec<PlayerId> = self.bots.keys().copied().collect();
+            for bid in bot_ids {
+                let input = crate::bot::think(&self.sim, bid, self.bots.get_mut(&bid).unwrap());
+                inputs.insert(bid, input);
             }
         }
 
@@ -431,8 +673,8 @@ impl Room {
     fn send_snapshots(&mut self) {
         let net_players: Vec<NetPlayer> = self
             .players
-            .keys()
-            .filter_map(|&id| {
+            .iter()
+            .filter_map(|(&id, rp)| {
                 let snap = self.sim.snapshot(id)?;
                 let mut flags = 0u8;
                 if snap.state.grounded {
@@ -443,6 +685,12 @@ impl Room {
                 }
                 if snap.alive {
                     flags |= player_flags::ALIVE;
+                }
+                if !rp.connected {
+                    flags |= player_flags::DISCONNECTED;
+                }
+                if snap.state.invuln > 0 || snap.state.dash_ticks > 0 {
+                    flags |= player_flags::INTANGIBLE;
                 }
                 Some(NetPlayer {
                     id,
@@ -491,6 +739,10 @@ impl Room {
             .collect();
 
         for (&id, p) in &self.players {
+            // No live socket for a disconnected player awaiting reconnect, or a bot.
+            if !p.connected || p.bot {
+                continue;
+            }
             let msg = ServerMsg::Snapshot(SnapshotMsg {
                 tick: self.tick,
                 last_input_seq: p.last_seq,
@@ -516,6 +768,7 @@ pub fn spawn_room(code: String, state: Arc<AppState>) -> RoomHandle {
             code: code.clone(),
             sim: GameSim::new(true),
             players: BTreeMap::new(),
+            bots: BTreeMap::new(),
             phase: RoomPhase::Lobby,
             tick: 0,
             pending_events: Vec::new(),
@@ -526,17 +779,39 @@ pub fn spawn_room(code: String, state: Arc<AppState>) -> RoomHandle {
         loop {
             interval.tick().await;
 
-            // Drain commands.
+            // Drain commands, but bounded per tick so a burst can't monopolize
+            // the room task (per-connection rate limiting bounds steady-state
+            // inflow; this is belt-and-braces against a spike).
+            let mut drained = 0u32;
             loop {
+                if drained >= CMD_DRAIN_CAP {
+                    break;
+                }
                 match rx.try_recv() {
-                    Ok(RoomCmd::Join { name, resp }) => {
-                        let _ = resp.send(room.handle_join(name));
+                    Ok(RoomCmd::Join { name, token, resp }) => {
+                        let _ = resp.send(room.handle_join(name, token));
                     }
-                    Ok(RoomCmd::Msg { id, msg }) => room.handle_msg(id, msg),
-                    Ok(RoomCmd::Leave { id }) => room.handle_leave(id),
+                    Ok(RoomCmd::Msg { id, epoch, msg }) => {
+                        if room.epoch_ok(id, epoch) {
+                            room.handle_msg(id, msg);
+                        }
+                    }
+                    Ok(RoomCmd::Leave { id, epoch }) => {
+                        if room.epoch_ok(id, epoch) {
+                            room.handle_leave(id);
+                        }
+                    }
+                    Ok(RoomCmd::Shutdown) => {
+                        room.broadcast(&ServerMsg::Error {
+                            msg: "server restarting — please rejoin".into(),
+                        });
+                        tracing::info!("room {code} shutting down");
+                        return;
+                    }
                     Err(mpsc::error::TryRecvError::Empty) => break,
                     Err(mpsc::error::TryRecvError::Disconnected) => return,
                 }
+                drained += 1;
             }
 
             room.tick();
@@ -563,11 +838,12 @@ mod tests {
     use super::*;
     use protocol::InputMsg;
 
-    fn test_room() -> Room {
+    pub(super) fn test_room() -> Room {
         Room {
             code: "TEST".into(),
             sim: GameSim::new(true),
             players: BTreeMap::new(),
+            bots: BTreeMap::new(),
             phase: RoomPhase::Lobby,
             tick: 0,
             pending_events: Vec::new(),
@@ -585,14 +861,48 @@ mod tests {
         })
     }
 
+    #[test]
+    fn names_are_sanitized_on_join() {
+        // Control chars stripped, length clamped, empty falls back to "Player".
+        assert_eq!(sanitize_name("Alice"), "Alice");
+        assert_eq!(sanitize_name("Bad\u{0000}Name"), "BadName");
+        assert_eq!(sanitize_name("line\nbreak"), "linebreak");
+        assert_eq!(sanitize_name("   "), "Player");
+        assert_eq!(sanitize_name(""), "Player");
+        assert!(sanitize_name("012345678901234567890").chars().count() <= 16);
+
+        // The stored meta name reflects the sanitized value (angle brackets are
+        // legal text — the client escapes them at render).
+        let mut room = test_room();
+        room.handle_join("Zoe\u{0007}\t".into(), None).unwrap();
+        let name = &room.players.get(&0).unwrap().meta.name;
+        assert!(!name.chars().any(|c| c.is_control()));
+        assert_eq!(name, "Zoe");
+    }
+
+    #[test]
+    fn input_backlog_is_capped() {
+        // A client spamming inputs within one tick can't grow the backlog
+        // unbounded — it's clamped to the jitter buffer size.
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        for seq in 1..=100u16 {
+            room.handle_msg(0, held_input(seq));
+        }
+        assert!(
+            room.players.get(&0).unwrap().inputs.len() <= 6,
+            "input backlog exceeded cap"
+        );
+    }
+
     /// Regression: inputs queued/held during the round-end/countdown freeze
     /// must not replay when the next round starts.
     #[test]
     fn stale_inputs_do_not_replay_at_round_start() {
         let c = consts();
         let mut room = test_room();
-        room.handle_join("A".into()).unwrap();
-        room.handle_join("B".into()).unwrap();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_join("B".into(), None).unwrap();
 
         // Lobby: hold forward + mash buttons for a bit.
         let mut seq = 0u16;
@@ -642,6 +952,202 @@ mod tests {
 }
 
 #[cfg(test)]
+mod reconnect_tests {
+    use super::tests::test_room;
+    use super::*;
+
+    fn playing_room_with_two() -> Room {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_join("B".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::StartMatch);
+        for _ in 0..(consts().round_countdown_ticks + 2) {
+            room.tick();
+        }
+        assert!(matches!(room.phase, RoomPhase::Playing { .. }));
+        room
+    }
+
+    #[test]
+    fn reconnect_preserves_id_and_score() {
+        let mut room = playing_room_with_two();
+        room.players.get_mut(&0).unwrap().score = 2;
+        let token = room.players.get(&0).unwrap().token.clone();
+        let old_epoch = room.players.get(&0).unwrap().epoch;
+
+        // Mid-match disconnect holds the slot rather than removing it.
+        room.handle_leave(0);
+        assert!(room.players.contains_key(&0), "slot held during grace");
+        assert!(!room.players.get(&0).unwrap().connected);
+
+        let ack = room.handle_join("A".into(), Some(token)).unwrap();
+        assert_eq!(ack.id, 0, "rejoined same slot");
+        assert!(ack.epoch > old_epoch, "epoch bumped on reconnect");
+        let p = room.players.get(&0).unwrap();
+        assert!(p.connected);
+        assert_eq!(p.score, 2, "score preserved across reconnect");
+    }
+
+    #[test]
+    fn grace_expiry_drops_player() {
+        let mut room = playing_room_with_two();
+        room.handle_leave(0);
+        assert!(room.players.contains_key(&0));
+        for _ in 0..(consts().reconnect_grace_ticks + 1) {
+            room.tick();
+        }
+        assert!(!room.players.contains_key(&0), "dropped after grace window");
+    }
+
+    #[test]
+    fn stale_epoch_leave_ignored_after_takeover() {
+        let mut room = playing_room_with_two();
+        let token = room.players.get(&0).unwrap().token.clone();
+        let old_epoch = room.players.get(&0).unwrap().epoch;
+
+        let ack = room.handle_join("A".into(), Some(token)).unwrap();
+        assert_ne!(ack.epoch, old_epoch);
+
+        // A Leave from the superseded socket carries the old epoch: ignored.
+        if room.epoch_ok(0, old_epoch) {
+            room.handle_leave(0);
+        }
+        assert!(
+            room.players.get(&0).unwrap().connected,
+            "stale-epoch leave must not disconnect the reconnected player"
+        );
+
+        // The current connection's Leave still works.
+        if room.epoch_ok(0, ack.epoch) {
+            room.handle_leave(0);
+        }
+        assert!(!room.players.get(&0).unwrap().connected);
+    }
+
+    #[test]
+    fn lobby_disconnect_removes_immediately() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_join("B".into(), None).unwrap();
+        room.handle_leave(1);
+        assert!(
+            !room.players.contains_key(&1),
+            "lobby disconnect frees the slot at once"
+        );
+    }
+
+    #[test]
+    fn unknown_token_falls_back_to_fresh_join() {
+        let mut room = test_room();
+        let ack = room
+            .handle_join("A".into(), Some("deadbeefdeadbeef".into()))
+            .unwrap();
+        assert_eq!(ack.id, 0);
+        assert_eq!(ack.epoch, 0, "unknown token => fresh join, not a reconnect");
+        assert!(room.players.contains_key(&0));
+    }
+}
+
+#[cfg(test)]
+mod bot_tests {
+    use super::tests::test_room;
+    use super::*;
+
+    #[test]
+    fn non_host_add_bot_is_ignored() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap(); // id 0 = host
+        room.handle_join("B".into(), None).unwrap(); // id 1
+        room.handle_msg(1, ClientMsg::AddBot); // non-host
+        assert_eq!(room.players.len(), 2, "only the host may add bots");
+    }
+
+    #[test]
+    fn host_adds_bot_and_it_is_marked() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot);
+        assert_eq!(room.players.len(), 2);
+        let bot = room.players.values().find(|p| p.bot).expect("a bot exists");
+        assert!(bot.meta.bot);
+        assert_eq!(room.bots.len(), 1);
+        // Host stays the human even though the bot may hold a different id.
+        assert_eq!(room.host(), Some(0));
+    }
+
+    #[test]
+    fn add_bot_respects_max_players() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        for _ in 0..consts().max_players {
+            room.handle_msg(0, ClientMsg::AddBot);
+        }
+        assert_eq!(room.players.len(), consts().max_players as usize);
+    }
+
+    #[test]
+    fn bot_moves_toward_human_in_play() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot);
+        let bot_id = *room.bots.keys().next().unwrap();
+        room.handle_msg(0, ClientMsg::StartMatch);
+        for _ in 0..(consts().round_countdown_ticks + 2) {
+            room.tick();
+        }
+        assert!(matches!(room.phase, RoomPhase::Playing { .. }));
+        // Place the human far from the bot, then let the bot chase.
+        room.sim.respawn(0, [8.0, 1.05, 0.0]);
+        room.sim.respawn(bot_id, [-8.0, 1.05, 0.0]);
+        let start = room.sim.snapshot(bot_id).unwrap().pos;
+        for _ in 0..90 {
+            room.tick();
+        }
+        let end = room.sim.snapshot(bot_id).unwrap().pos;
+        let moved = ((end[0] - start[0]).powi(2) + (end[2] - start[2]).powi(2)).sqrt();
+        assert!(moved > 1.0, "bot should chase the human (moved {moved})");
+    }
+
+    #[test]
+    fn solo_human_plus_bot_round_ends_when_human_dies() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::StartMatch);
+        for _ in 0..(consts().round_countdown_ticks + 2) {
+            room.tick();
+        }
+        assert!(matches!(room.phase, RoomPhase::Playing { .. }));
+        // Drop the human below the kill plane.
+        room.sim.respawn(0, [0.0, consts().kill_plane_y - 5.0, 0.0]);
+        let mut ended = false;
+        for _ in 0..120 {
+            room.tick();
+            if matches!(room.phase, RoomPhase::RoundEnd { .. } | RoomPhase::MatchEnd) {
+                ended = true;
+                break;
+            }
+        }
+        assert!(ended, "round should end when the lone human is knocked out");
+    }
+
+    #[test]
+    fn bots_despawn_when_last_human_leaves() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot);
+        assert_eq!(room.bots.len(), 2);
+        // Human leaves the lobby (removed immediately), then a tick sweeps bots.
+        room.handle_leave(0);
+        room.tick();
+        assert_eq!(room.humans(), 0);
+        assert!(room.bots.is_empty(), "bots should be despawned");
+        assert!(room.players.is_empty(), "room should be empty for idle cleanup");
+    }
+}
+
+#[cfg(test)]
 mod stale_input_tests {
     use super::*;
     use protocol::InputMsg;
@@ -655,12 +1161,13 @@ mod stale_input_tests {
             code: "TST2".into(),
             sim: GameSim::new(true),
             players: BTM::new(),
+            bots: BTM::new(),
             phase: RoomPhase::Lobby,
             tick: 0,
             pending_events: Vec::new(),
             empty_ticks: 0,
         };
-        room.handle_join("A".into()).unwrap();
+        room.handle_join("A".into(), None).unwrap();
         // Send one forward input, then go silent.
         room.handle_msg(
             0,

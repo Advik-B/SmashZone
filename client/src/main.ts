@@ -11,20 +11,41 @@ import {
 import { loadCharacterModel } from "./game/players";
 import { Renderer } from "./game/renderer";
 import { TouchControls } from "./game/touch";
+import {
+  getMusicVolume,
+  getVolume,
+  isMuted,
+  isMusicMuted,
+  loadAudio,
+  playMusic,
+  setMuted,
+  setMusicMuted,
+  setMusicVolume,
+  setVolume,
+} from "./game/audio";
+import { savedQuality, saveQuality } from "./game/quality";
 import { UI } from "./ui/ui";
 
 async function createRoom(): Promise<string> {
   const res = await fetch("/api/rooms", { method: "POST" });
-  if (!res.ok) throw new Error("failed to create room");
+  if (!res.ok) {
+    // Surface the server's reason (e.g. "server is full") when it sends one.
+    const msg = await res
+      .json()
+      .then((b) => (b && typeof b.error === "string" ? b.error : null))
+      .catch(() => null);
+    throw new Error(msg ?? "failed to create room");
+  }
   const { code } = await res.json();
   return code;
 }
 
 async function main() {
-  await Promise.all([init(), loadCharacterModel()]);
+  await Promise.all([init(), loadCharacterModel(), loadAudio()]);
 
   const canvas = document.getElementById("game") as HTMLCanvasElement;
   const renderer = new Renderer(canvas);
+  renderer.applyQuality(savedQuality());
   // Arena backdrop behind the menu.
   {
     const bg = new ClientSim(0);
@@ -64,6 +85,7 @@ async function main() {
   const showMenu = (error = "") => {
     document.exitPointerLock?.();
     touch?.hide();
+    playMusic("menu");
     ui.showMenu(
       async (name) => {
         if (!(await ensureMode())) return;
@@ -82,10 +104,25 @@ async function main() {
       touch
         ? null
         : () =>
-            ui.showInputModePrompt(savedInputMode(), (m) => {
-              pickMode(m);
-              showMenu(); // refresh hints + mode label
-            }, () => {}),
+            ui.showSettings({
+              onPickMode: (m) => {
+                pickMode(m);
+                showMenu(); // refresh hints + mode label
+              },
+              volume: getVolume(),
+              muted: isMuted(),
+              onVolume: (v) => setVolume(v),
+              onMuted: (m) => setMuted(m),
+              musicVolume: getMusicVolume(),
+              musicMuted: isMusicMuted(),
+              onMusicVolume: (v) => setMusicVolume(v),
+              onMusicMuted: (m) => setMusicMuted(m),
+              quality: savedQuality(),
+              onQuality: (q) => {
+                saveQuality(q);
+                renderer.applyQuality(q);
+              },
+            }),
     );
   };
 

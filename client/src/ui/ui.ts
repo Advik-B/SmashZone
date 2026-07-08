@@ -1,5 +1,7 @@
 import type { Phase, PlayerMeta, Score } from "../net/messages";
+import constants from "../../../shared/constants.json";
 import { isTouchDevice, savedInputMode, type InputMode } from "../game/input";
+import type { Quality } from "../game/quality";
 import { SLOT_COLORS } from "../game/players";
 import {
   arrowCluster,
@@ -13,6 +15,28 @@ import {
 
 function colorOf(slot: number): string {
   return "#" + SLOT_COLORS[slot % SLOT_COLORS.length].toString(16).padStart(6, "0");
+}
+
+/**
+ * Escape untrusted text (player names, server error strings) before it goes
+ * into innerHTML. Player names come straight off the wire from other clients,
+ * so treating them as markup would be a stored-XSS hole.
+ */
+export function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
 }
 
 function menuControlsHint(): string {
@@ -102,6 +126,8 @@ export interface PhaseCtx {
   code: string;
   onStart: () => void;
   onRematch: () => void;
+  onAddBot: () => void;
+  onRemoveBot: (id: number) => void;
 }
 
 export class UI {
@@ -146,8 +172,8 @@ export class UI {
             : ""
         }
         <h1>SMASHZONE</h1>
-        <div class="error">${error}</div>
-        <input id="m-name" maxlength="16" placeholder="your name" value="${saved}" />
+        <div class="error">${esc(error)}</div>
+        <input id="m-name" maxlength="16" placeholder="your name" value="${esc(saved)}" />
         <button id="m-create">Create Party</button>
         <div class="row">
           <input id="m-code" maxlength="4" placeholder="CODE" />
@@ -235,14 +261,96 @@ export class UI {
     cards[current === "keyboard" ? 1 : 0].focus();
   }
 
+  /**
+   * Full settings modal (opened by the menu gear): input scheme, audio
+   * volume/mute, and render quality. Live-applies each change; Esc closes.
+   */
+  showSettings(opts: {
+    onPickMode: (m: InputMode) => void;
+    volume: number;
+    muted: boolean;
+    onVolume: (v: number) => void;
+    onMuted: (m: boolean) => void;
+    musicVolume: number;
+    musicMuted: boolean;
+    onMusicVolume: (v: number) => void;
+    onMusicMuted: (m: boolean) => void;
+    quality: Quality;
+    onQuality: (q: Quality) => void;
+  }) {
+    const modal = document.createElement("div");
+    modal.className = "mode-modal";
+    modal.tabIndex = -1;
+    const qualities: Quality[] = ["low", "medium", "high"];
+    modal.innerHTML = `
+      <h2>SETTINGS</h2>
+      ${
+        isTouchDevice()
+          ? ""
+          : `<div class="settings-section"><div class="hint">controls</div>
+        <div class="mode-cards">${modeCard("pointer")}${modeCard("keyboard")}</div></div>`
+      }
+      <div class="settings-section"><div class="hint">audio</div>
+        <label class="settings-row"><span>sfx volume</span>
+          <input id="set-vol" type="range" min="0" max="100" value="${Math.round(opts.volume * 100)}" /></label>
+        <label class="settings-row"><span>sfx mute</span>
+          <input id="set-mute" type="checkbox" ${opts.muted ? "checked" : ""} /></label>
+        <label class="settings-row"><span>music volume</span>
+          <input id="set-mvol" type="range" min="0" max="100" value="${Math.round(opts.musicVolume * 100)}" /></label>
+        <label class="settings-row"><span>music mute</span>
+          <input id="set-mmute" type="checkbox" ${opts.musicMuted ? "checked" : ""} /></label>
+      </div>
+      <div class="settings-section"><div class="hint">quality</div>
+        <div class="quality-cards">${qualities
+          .map(
+            (q) =>
+              `<button class="q-btn ${q === opts.quality ? "active" : ""}" data-q="${q}">${q}</button>`,
+          )
+          .join("")}</div>
+      </div>
+      <div class="hint">Esc to close</div>`;
+    this.root.appendChild(modal);
+    const close = () => modal.remove();
+
+    for (const card of modal.querySelectorAll<HTMLButtonElement>(".mode-card")) {
+      card.onclick = () => {
+        opts.onPickMode(card.dataset.mode as InputMode);
+        close();
+      };
+    }
+    const vol = modal.querySelector<HTMLInputElement>("#set-vol")!;
+    vol.oninput = () => opts.onVolume(Number(vol.value) / 100);
+    const mute = modal.querySelector<HTMLInputElement>("#set-mute")!;
+    mute.onchange = () => opts.onMuted(mute.checked);
+    const mvol = modal.querySelector<HTMLInputElement>("#set-mvol")!;
+    mvol.oninput = () => opts.onMusicVolume(Number(mvol.value) / 100);
+    const mmute = modal.querySelector<HTMLInputElement>("#set-mmute")!;
+    mmute.onchange = () => opts.onMusicMuted(mmute.checked);
+    for (const b of modal.querySelectorAll<HTMLButtonElement>(".q-btn")) {
+      b.onclick = () => {
+        opts.onQuality(b.dataset.q as Quality);
+        modal.querySelectorAll(".q-btn").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+      };
+    }
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+      }
+    });
+    modal.focus();
+  }
+
   showConnecting() {
     this.root.innerHTML = `<div class="menu"><h1>SMASHZONE</h1><div>connecting…</div></div>`;
   }
 
   buildHud(code: string) {
     this.root.innerHTML = `
-      <div class="hud-room">ROOM ${code} · <span id="h-ping"></span></div>
+      <div class="hud-room">ROOM ${esc(code)} · <span id="h-ping"></span></div>
       <div class="hud-scores" id="h-scores"></div>
+      <div class="hud-feed" id="h-feed"></div>
       <div class="hud-damage" id="h-damage"></div>
       <div class="hud-powerup" id="h-powerup"></div>
       <div class="hud-center" id="h-center"><div id="h-title"></div><div class="hud-sub" id="h-sub"></div></div>
@@ -271,6 +379,18 @@ export class UI {
     if (el) el.textContent = `${Math.max(0, Math.round(ms))}ms`;
   }
 
+  /** Append a kill-feed line (caller pre-escapes any names). Cap 4, TTL 4 s. */
+  addFeed(html: string) {
+    const el = document.getElementById("h-feed");
+    if (!el) return;
+    const line = document.createElement("div");
+    line.className = "feed-line";
+    line.innerHTML = html;
+    el.appendChild(line);
+    while (el.children.length > 4) el.removeChild(el.firstChild!);
+    setTimeout(() => line.remove(), 4000);
+  }
+
   setDamage(dmg: number, alive: boolean) {
     if (!this.hudDamage) return;
     this.hudDamage.textContent = alive ? `${dmg}%` : "";
@@ -285,15 +405,21 @@ export class UI {
     if (this.hudSub) this.hudSub.textContent = sub;
   }
 
-  setScores(metas: Map<number, PlayerMeta>, scores: Score[], aliveIds?: Set<number>) {
+  setScores(
+    metas: Map<number, PlayerMeta>,
+    scores: Score[],
+    aliveIds?: Set<number>,
+    disconnectedIds?: Set<number>,
+  ) {
     if (!this.hudScores) return;
     const wins = new Map(scores.map((s) => [s.id, s.wins]));
     this.hudScores.innerHTML = [...metas.values()]
       .map((m) => {
         const dead = aliveIds && !aliveIds.has(m.id);
-        return `<div class="row ${dead ? "dead" : ""}">
+        const gone = disconnectedIds?.has(m.id);
+        return `<div class="row ${dead ? "dead" : ""} ${gone ? "disconnected" : ""}">
           <div class="dot" style="background:${colorOf(m.slot)}"></div>
-          <span>${m.name}</span><b>${wins.get(m.id) ?? 0}</b>
+          <span>${esc(m.name)}${gone ? " ⟳" : ""}</span><b>${wins.get(m.id) ?? 0}</b>
         </div>`;
       })
       .join("");
@@ -304,38 +430,48 @@ export class UI {
     if (!this.overlay) return;
     if (phase.type === "Lobby") {
       const isHost = ctx.myId === ctx.host;
+      const canAddBot = isHost && ctx.metas.size < constants.maxPlayers;
       this.overlay.innerHTML = `
         <div class="lobby-panel">
           <div class="hint">share this code</div>
-          <div class="code">${ctx.code}</div>
+          <div class="code">${esc(ctx.code)}</div>
           <div class="players">${[...ctx.metas.values()]
-            .map(
-              (m) =>
-                `<div class="pcard" style="--slot:${colorOf(m.slot)}">${m.name}${
-                  m.id === ctx.host ? " ★" : ""
-                }</div>`,
-            )
+            .map((m) => {
+              const tag = m.bot ? `<span class="bot-tag">BOT</span>` : "";
+              const star = m.id === ctx.host ? " ★" : "";
+              const rm =
+                isHost && m.bot
+                  ? `<button class="bot-x" data-bot="${m.id}" aria-label="remove bot">✕</button>`
+                  : "";
+              return `<div class="pcard" style="--slot:${colorOf(m.slot)}">${esc(m.name)}${tag}${star}${rm}</div>`;
+            })
             .join("")}</div>
           ${
             isHost
               ? `<button id="h-start" class="big-btn">START MATCH</button>`
               : `<div class="hint">waiting for the host to start…</div>`
           }
+          ${canAddBot ? `<button id="h-addbot" class="secondary">+ Add Bot</button>` : ""}
           <div class="hint">you can run around and brawl while you wait — falling off just respawns you</div>
         </div>`;
       const btn = document.getElementById("h-start");
       if (btn) btn.onclick = ctx.onStart;
+      const addBot = document.getElementById("h-addbot");
+      if (addBot) addBot.onclick = ctx.onAddBot;
+      for (const x of this.overlay.querySelectorAll<HTMLButtonElement>(".bot-x")) {
+        x.onclick = () => ctx.onRemoveBot(Number(x.dataset.bot));
+      }
     } else if (phase.type === "MatchEnd") {
       const isHost = ctx.myId === ctx.host;
       const winner = ctx.metas.get(phase.winner);
       this.overlay.innerHTML = `
         <div class="lobby-panel">
-          <div class="code" style="letter-spacing:2px">${winner?.name ?? "???"} WINS!</div>
+          <div class="code" style="letter-spacing:2px">${esc(winner?.name ?? "???")} WINS!</div>
           <div class="players">${phase.scores
             .map((s) => {
               const m = ctx.metas.get(s.id);
               return `<div class="pcard" style="--slot:${colorOf(m?.slot ?? 0)}">${
-                m?.name ?? "?"
+                esc(m?.name ?? "?")
               }<br><b style="font-size:26px">${s.wins}</b></div>`;
             })
             .join("")}</div>

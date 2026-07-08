@@ -181,6 +181,85 @@ body {
   letter-spacing: 2px;
 }
 
+.hud-feed {
+  position: absolute;
+  top: 42px;
+  right: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.settings-section {
+  margin: 14px 0;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 8px 0;
+  min-width: 240px;
+}
+
+.settings-row input[type="range"] {
+  flex: 1;
+}
+
+.bot-tag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  opacity: 0.7;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.bot-x {
+  margin-left: 8px;
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.quality-cards {
+  display: flex;
+  gap: 8px;
+}
+
+.q-btn {
+  flex: 1;
+  text-transform: capitalize;
+}
+
+.q-btn.active {
+  outline: 2px solid #ffd76e;
+  outline-offset: 1px;
+}
+
+.feed-line {
+  font-size: 14px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.4);
+  animation: feed-in 0.18s ease-out;
+}
+
+@keyframes feed-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .hud-center {
   position: absolute;
   top: 30%;
@@ -227,6 +306,11 @@ body {
 .hud-scores .dead {
   opacity: 0.35;
   text-decoration: line-through;
+}
+
+.hud-scores .disconnected {
+  opacity: 0.5;
+  font-style: italic;
 }
 
 .lobby-panel {

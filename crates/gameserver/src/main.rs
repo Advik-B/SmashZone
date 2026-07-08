@@ -1,3 +1,4 @@
+mod bot;
 mod net;
 mod room;
 
@@ -49,6 +50,15 @@ pub struct AppState {
     pub rooms: DashMap<String, room::RoomHandle>,
 }
 
+/// Hard cap on live rooms. Each room is a permanent 60 Hz tokio task, so
+/// uncapped `POST /api/rooms` would be an easy CPU/memory DoS.
+const MAX_ROOMS: usize = 256;
+
+/// True if a new room may be created given the current live-room count.
+fn room_capacity_available(live_rooms: usize) -> bool {
+    live_rooms < MAX_ROOMS
+}
+
 fn gen_code(rooms: &DashMap<String, room::RoomHandle>) -> String {
     // No 0/O/1/I/L ambiguity.
     const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -63,12 +73,20 @@ fn gen_code(rooms: &DashMap<String, room::RoomHandle>) -> String {
     }
 }
 
-async fn create_room(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn create_room(State(state): State<Arc<AppState>>) -> Response {
+    if !room_capacity_available(state.rooms.len()) {
+        tracing::warn!("room creation refused: at capacity ({MAX_ROOMS})");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "server is full, try again soon" })),
+        )
+            .into_response();
+    }
     let code = gen_code(&state.rooms);
     let handle = room::spawn_room(code.clone(), state.clone());
     state.rooms.insert(code.clone(), handle);
     tracing::info!("room {code} created");
-    Json(serde_json::json!({ "code": code }))
+    Json(serde_json::json!({ "code": code })).into_response()
 }
 
 #[tokio::main]
@@ -83,7 +101,7 @@ async fn main() {
         .route("/api/rooms", post(create_room))
         .route("/ws", any(net::ws_handler))
         .fallback(serve_static)
-        .with_state(state);
+        .with_state(state.clone());
 
     // BIND_ADDR wins; else PORT (Render/Heroku-style PaaS); else :8080.
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| {
@@ -92,5 +110,54 @@ async fn main() {
     });
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     tracing::info!("gameserver listening on {addr}");
-    axum::serve(listener, app).await.unwrap();
+
+    // Serve until a shutdown signal, then notify rooms so clients get a clean
+    // "server restarting" message instead of a silent socket drop.
+    tokio::select! {
+        r = axum::serve(listener, app) => r.unwrap(),
+        _ = shutdown_signal() => {
+            tracing::info!("shutdown signal received; notifying {} room(s)", state.rooms.len());
+            for entry in state.rooms.iter() {
+                let _ = entry.value().send(room::RoomCmd::Shutdown);
+            }
+            // Give writer tasks a moment to flush the notice before exit.
+            tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+        }
+    }
+}
+
+/// Resolves on SIGINT (Ctrl-C) or SIGTERM (Fly deploy / auto-stop).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            sig.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn room_capacity_gate() {
+        assert!(room_capacity_available(0));
+        assert!(room_capacity_available(MAX_ROOMS - 1));
+        assert!(!room_capacity_available(MAX_ROOMS));
+        assert!(!room_capacity_available(MAX_ROOMS + 100));
+    }
 }

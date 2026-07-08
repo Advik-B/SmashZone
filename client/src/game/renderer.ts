@@ -1,8 +1,13 @@
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import constants from "../../../shared/constants.json";
-import { PU_BOMB, POWERUP_COLORS } from "../net/messages";
+import { ANIM, PU_BOMB, POWERUP_COLORS } from "../net/messages";
 import { Effects } from "./effects";
+import { Floaters } from "./floaters";
 import { PlayerVisual } from "./players";
+import { QUALITY_PRESETS, type Quality } from "./quality";
 
 /** Distinct low-poly shape per pickup kind (1=hammer, 2=anchor, 3=gun, 4=bomb). */
 function buildPickupMesh(kind: number): THREE.Group {
@@ -84,16 +89,26 @@ export class Renderer {
     emissiveIntensity: 0.0,
   });
   effects: Effects;
+  private floaters: Floaters;
   private shakeAmp = 0;
   private camPos = new THREE.Vector3(0, 8, -14);
   private followPos = new THREE.Vector3();
   private time = 0;
+  private sun!: THREE.DirectionalLight;
+  private composer!: EffectComposer;
+  private bloomPass!: UnrealBloomPass;
+  private bloomEnabled = true;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // Filmic tone mapping + sRGB output so the emissive-heavy art (auras,
+    // pickups, bullets, bloom) reads as glow rather than flat oversaturation.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 300);
     this.resize();
@@ -101,9 +116,10 @@ export class Renderer {
     this.scene.background = new THREE.Color(0x11162e);
     this.scene.fog = new THREE.Fog(0x11162e, 40, 120);
 
-    const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x30243e, 0.9);
+    // Intensities bumped to compensate for ACES tone mapping dimming.
+    const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x30243e, 1.1);
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff2dd, 2.2);
+    const sun = new THREE.DirectionalLight(0xfff2dd, 2.8);
     sun.position.set(14, 26, 10);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -114,6 +130,7 @@ export class Renderer {
     sun.shadow.camera.bottom = -s;
     sun.shadow.camera.far = 80;
     this.scene.add(sun);
+    this.sun = sun;
 
     // Decorative starfield below/around the arena.
     const starGeo = new THREE.BufferGeometry();
@@ -134,6 +151,53 @@ export class Renderer {
     );
 
     this.effects = new Effects(this.scene);
+    this.floaters = new Floaters(this.scene);
+
+    // Post-processing: subtle bloom so emissives actually glow.
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      0.4, // strength
+      0.5, // radius
+      0.85, // threshold
+    );
+    this.composer.addPass(this.bloomPass);
+    this.composer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  /** Apply a quality preset (pixel ratio, shadows, bloom, particle budget). */
+  applyQuality(q: Quality) {
+    const p = QUALITY_PRESETS[q];
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, p.dprCap));
+    this.renderer.shadowMap.enabled = p.shadows;
+    this.sun.castShadow = p.shadows;
+    if (p.shadows && p.shadowRes > 0) {
+      this.sun.shadow.mapSize.set(p.shadowRes, p.shadowRes);
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null; // force realloc at the new size
+    }
+    // Materials must recompile for a shadow enable/disable to take effect.
+    this.scene.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) {
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) m.needsUpdate = true;
+      }
+    });
+    this.bloomEnabled = p.bloom;
+    this.effects.setBudget(p.particleBudget);
+    this.resize();
+  }
+
+  /** Floating damage number at a world position. */
+  spawnDamage(pos: [number, number, number], dmg: number, heavy: boolean) {
+    this.floaters.spawn(pos, `${dmg}`, heavy);
+  }
+
+  /** Update a player's nameplate damage readout. */
+  setPlayerDamage(id: number, dmg: number) {
+    this.players.get(id)?.setDamage(dmg);
   }
 
   /** Current visual position of a player (for event-anchored VFX). */
@@ -152,6 +216,7 @@ export class Renderer {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.composer?.setSize(w, h);
   }
 
   /** Build tile meshes from the flat [x,y,z,...] centers array from WASM. */
@@ -268,6 +333,19 @@ export class Renderer {
     }
   }
 
+  /** Tear down all per-session visuals (players, pickups, projectiles,
+   *  falling debris) so a reconnect can rebuild from a fresh Welcome. */
+  reset() {
+    for (const v of this.players.values()) v.dispose();
+    this.players.clear();
+    for (const g of this.pickupMeshes.values()) g.removeFromParent();
+    this.pickupMeshes.clear();
+    for (const m of this.projMeshes.values()) m.removeFromParent();
+    this.projMeshes.clear();
+    for (const f of this.falling) f.mesh.removeFromParent();
+    this.falling = [];
+  }
+
   addPlayer(id: number, name: string, slot: number) {
     this.removePlayer(id);
     const v = new PlayerVisual(name, slot);
@@ -287,11 +365,16 @@ export class Renderer {
     anim: number,
     dtSec: number,
     powerupKind = 0,
+    intangible = false,
+    grounded = true,
   ) {
     const v = this.players.get(id);
     if (!v) return;
     v.group.position.set(pos[0], pos[1], pos[2]);
-    v.update(anim, yaw, dtSec, powerupKind);
+    v.update(anim, yaw, dtSec, powerupKind, intangible, grounded);
+    if (anim === ANIM.Dash) {
+      this.effects.dashTrail(new THREE.Vector3(pos[0], pos[1], pos[2]), v.slotColor);
+    }
   }
 
   flashPlayer(id: number) {
@@ -305,6 +388,7 @@ export class Renderer {
   render(dtSec: number, focus: [number, number, number], camYaw: number, camPitch: number) {
     this.time += dtSec;
     this.effects.update(dtSec);
+    this.floaters.update(dtSec);
 
     // Pickups spin and bob; bombs blink faster as they age.
     for (const [id, g] of this.pickupMeshes) {
@@ -357,6 +441,10 @@ export class Renderer {
       this.followPos.y + 1.2,
       this.followPos.z,
     );
-    this.renderer.render(this.scene, this.camera);
+    if (this.bloomEnabled) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 }

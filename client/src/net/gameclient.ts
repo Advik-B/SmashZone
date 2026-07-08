@@ -1,7 +1,9 @@
 import {
   ClientSim,
+  encode_add_bot,
   encode_input,
   encode_ping,
+  encode_remove_bot,
   encode_rematch,
   encode_start_match,
 } from "../wasm/pkg/sim_wasm";
@@ -28,11 +30,11 @@ import {
   PU_GUN,
 } from "./messages";
 import * as THREE from "three";
-import { sfx } from "../game/audio";
+import { playMusic, sfx } from "../game/audio";
 import { ANIM_DANCE } from "../game/players";
 import type { Renderer } from "../game/renderer";
 import type { InputManager } from "../game/input";
-import type { PhaseCtx, UI } from "../ui/ui";
+import { esc, type PhaseCtx, type UI } from "../ui/ui";
 
 const TICK_MS = 1000 / constants.tickRate;
 const INTERP_TICKS = (constants.interpDelayMs / 1000) * constants.tickRate;
@@ -44,6 +46,8 @@ interface RemoteSample {
   anim: number;
   alive: boolean;
   powerup: number;
+  intangible: boolean;
+  grounded: boolean;
 }
 
 interface ProjSample {
@@ -97,6 +101,15 @@ export class GameClient {
   private projBuffers = new Map<number, { kind: number; samples: ProjSample[] }>();
   private myPowerup = 0;
   private myPowerupTicks = 0;
+  private myIntangible = false;
+  private myGrounded = true;
+  private reconnecting = false;
+  private disconnectedIds = new Set<number>();
+  private spectateTarget: number | null = null;
+  private spectatePrevButtons = 0;
+  private hitstopMs = 0;
+  private lastFocus: Vec3 = [0, 1, 0];
+  private lastHitBy = new Map<number, { attacker: number; t: number }>();
   destroyed = false;
 
   constructor(
@@ -109,6 +122,10 @@ export class GameClient {
   ) {
     this.conn = new Connection(code, name);
     this.conn.onMessage = (m) => this.onMessage(m);
+    this.conn.onReconnecting = (attempt) => {
+      this.reconnecting = true;
+      this.ui.setCenter("reconnecting…", `attempt ${attempt}`);
+    };
     this.conn.onClose = (reason) => {
       this.destroyed = true;
       clearInterval(this.pingTimer);
@@ -125,9 +142,24 @@ export class GameClient {
     this.conn.close();
   }
 
+  /** Dispose all per-session state so a reconnect Welcome rebuilds cleanly.
+   *  (lastScores is intentionally kept so the scoreboard survives a blip.) */
+  private resetWorld() {
+    this.sim?.free();
+    this.sim = null;
+    this.metas.clear();
+    this.buffers.clear();
+    this.projBuffers.clear();
+    this.pending = [];
+    this.aliveIds.clear();
+    this.disconnectedIds.clear();
+    this.renderer.reset();
+  }
+
   private predicting(): boolean {
     return (
       this.sim !== null &&
+      !this.reconnecting &&
       this.localAlive &&
       (this.phase.type === "Lobby" || this.phase.type === "Playing")
     );
@@ -141,14 +173,22 @@ export class GameClient {
       code: this.code,
       onStart: () => this.conn.send(encode_start_match()),
       onRematch: () => this.conn.send(encode_rematch()),
+      onAddBot: () => this.conn.send(encode_add_bot()),
+      onRemoveBot: (id: number) => this.conn.send(encode_remove_bot(id)),
     };
   }
 
   private onMessage(msg: ServerMsg) {
     switch (msg.type) {
       case "Welcome": {
+        // Tear down any prior session so this handler works for both the
+        // first join and a reconnect re-Welcome (rebuilt from the roster
+        // the server sends here).
+        this.resetWorld();
+        this.reconnecting = false;
         this.myId = msg.yourId;
         this.code = msg.code;
+        this.conn.setToken(msg.token);
         this.input.reset();
         this.sim = new ClientSim(this.myId);
         this.sim.add_local(0, 1.05, 0);
@@ -164,7 +204,7 @@ export class GameClient {
         break;
       }
       case "PlayerJoined": {
-        const m = { id: msg.id, name: msg.name, slot: msg.slot };
+        const m = { id: msg.id, name: msg.name, slot: msg.slot, bot: msg.bot };
         this.metas.set(m.id, m);
         this.buffers.set(m.id, []);
         this.renderer.addPlayer(m.id, m.name, m.slot);
@@ -207,7 +247,12 @@ export class GameClient {
       id,
       wins: this.lastScores.get(id) ?? 0,
     }));
-    this.ui.setScores(this.metas, scores, this.phase.type === "Playing" ? this.aliveIds : undefined);
+    this.ui.setScores(
+      this.metas,
+      scores,
+      this.phase.type === "Playing" ? this.aliveIds : undefined,
+      this.disconnectedIds,
+    );
   }
 
   private applyPhase(phase: Phase) {
@@ -223,12 +268,15 @@ export class GameClient {
         this.hostId = phase.host;
         this.localAlive = true;
         this.ui.setCenter("");
+        playMusic("menu");
         break;
       case "Countdown":
         // Server has reset the arena and respawned everyone.
         this.sim?.arena_reset();
         this.localAlive = true;
         this.aliveIds = new Set(this.metas.keys());
+        this.spectateTarget = null;
+        playMusic("battle");
         break;
       case "Playing":
         this.roundStartTick = phase.roundStartTick;
@@ -250,6 +298,7 @@ export class GameClient {
       case "MatchEnd":
         this.ui.setCenter("");
         sfx.win();
+        playMusic("menu");
         break;
     }
     this.refreshOverlay();
@@ -267,6 +316,7 @@ export class GameClient {
 
     // Buffer states for interpolation (all players incl. self; self is used
     // when not predicting, e.g. during countdown or while dead).
+    const nextDisc = new Set<number>();
     for (const ps of s.players) {
       let buf = this.buffers.get(ps.id);
       if (!buf) {
@@ -280,12 +330,25 @@ export class GameClient {
         anim: ps.anim,
         alive: ps.alive,
         powerup: ps.powerup,
+        intangible: ps.intangible,
+        grounded: ps.grounded,
       });
       if (buf.length > 40) buf.shift();
+      if (ps.disconnected) nextDisc.add(ps.id);
+      // Live damage % over each head (data already on the wire).
+      this.renderer.setPlayerDamage(ps.id, ps.damage);
       if (this.phase.type === "Playing") {
         if (ps.alive) this.aliveIds.add(ps.id);
         else if (this.aliveIds.delete(ps.id)) this.refreshOverlay();
       }
+    }
+    // Dimmed-scoreboard state: refresh only when the disconnected set changes.
+    if (
+      nextDisc.size !== this.disconnectedIds.size ||
+      [...nextDisc].some((id) => !this.disconnectedIds.has(id))
+    ) {
+      this.disconnectedIds = nextDisc;
+      this.refreshOverlay();
     }
 
     // Pickups render straight from the authoritative list.
@@ -328,6 +391,9 @@ export class GameClient {
       this.myDamage = s.local.damage;
       this.myPowerup = s.local.state.powerup ?? 0;
       this.myPowerupTicks = s.local.state.powerup_ticks ?? 0;
+      this.myIntangible =
+        (s.local.state.invuln ?? 0) > 0 || (s.local.state.dash_ticks ?? 0) > 0;
+      this.myGrounded = s.local.state.grounded ?? true;
       // Sync the prediction world's powerup so gun/bomb inputs predict as
       // fire (not melee) immediately after a pickup.
       this.sim.set_local_powerup(this.myPowerup, this.myPowerupTicks);
@@ -388,11 +454,19 @@ export class GameClient {
       case "Hit": {
         this.renderer.flashPlayer(ev.target);
         const p = this.renderer.playerPos(ev.target);
-        if (p) this.renderer.effects.hitBurst(p, ev.heavy);
+        if (p) {
+          this.renderer.effects.hitBurst(p, ev.heavy);
+          this.renderer.spawnDamage([p.x, p.y, p.z], ev.damage, ev.heavy);
+        }
         if (ev.heavy) sfx.hitHeavy();
         else sfx.hitLight();
         if (ev.target === this.myId) this.renderer.shake(ev.heavy ? 0.45 : 0.25);
         else if (ev.attacker === this.myId) this.renderer.shake(0.12);
+        // Kill-feed credit (valid 5 s) + local hitstop (extend-only).
+        this.lastHitBy.set(ev.target, { attacker: ev.attacker, t: performance.now() });
+        if (ev.target === this.myId || ev.attacker === this.myId) {
+          this.hitstopMs = Math.max(this.hitstopMs, ev.heavy ? 70 : 45);
+        }
         break;
       }
       case "Slam": {
@@ -409,6 +483,16 @@ export class GameClient {
         }
         sfx.death();
         if (ev.player === this.myId) this.renderer.shake(0.4);
+        // Kill feed: credit the last attacker within 5 s, else a solo fall.
+        const victim = esc(this.metas.get(ev.player)?.name ?? "?");
+        const credit = this.lastHitBy.get(ev.player);
+        if (credit && performance.now() - credit.t < 5000 && credit.attacker !== ev.player) {
+          const killer = esc(this.metas.get(credit.attacker)?.name ?? "?");
+          this.ui.addFeed(`${killer} knocked out ${victim}`);
+        } else {
+          this.ui.addFeed(`${victim} fell`);
+        }
+        this.lastHitBy.delete(ev.player);
         break;
       }
       case "PickupSpawn": {
@@ -468,9 +552,10 @@ export class GameClient {
     if (pressed & BTN_LIGHT) {
       if (this.myPowerup === PU_GUN) sfx.shoot();
       else if (this.myPowerup === PU_BOMB) sfx.throwBomb();
+      else if (!this.myGrounded) sfx.swingAir();
       else sfx.swing();
     } else if (pressed & BTN_HEAVY) {
-      sfx.swing();
+      sfx.swingHeavy();
     }
     this.seq = (this.seq + 1) & 0xffff;
     this.conn.send(
@@ -513,6 +598,8 @@ export class GameClient {
           anim: b.anim,
           alive: b.alive,
           powerup: b.powerup,
+          intangible: b.intangible,
+          grounded: b.grounded,
         };
       }
     }
@@ -524,6 +611,14 @@ export class GameClient {
     if (this.destroyed || !this.sim) return;
     const dtMs = Math.min(100, now - (this.lastUpdateMs || now));
     this.lastUpdateMs = now;
+    // Hitstop: freeze the world briefly on a solid hit for impact. Time still
+    // accrues into the accumulator so the sim catches up after (no input loss).
+    if (this.hitstopMs > 0) {
+      this.hitstopMs -= dtMs;
+      this.accumulator += dtMs;
+      this.renderer.render(0, this.lastFocus, this.input.camYaw, this.input.camPitch);
+      return;
+    }
     const dtSec = dtMs / 1000;
     this.input.update(dtSec);
 
@@ -543,8 +638,33 @@ export class GameClient {
       // Keep draining the sampler while frozen so button presses latched
       // during round-end/countdown don't fire on the first tick of the
       // next round.
-      this.input.sample();
+      const s = this.input.sample();
       this.prevButtons = 0;
+      // Spectator: while dead mid-round, follow a survivor; attack/dash cycles.
+      if (this.phase.type === "Playing" && !this.localAlive) {
+        const pressed = s.buttons & ~this.spectatePrevButtons;
+        this.spectatePrevButtons = s.buttons;
+        const survivors = [...this.aliveIds]
+          .filter((id) => id !== this.myId)
+          .sort((a, b) => a - b);
+        if (survivors.length > 0) {
+          let t = this.spectateTarget;
+          if (t === null || !survivors.includes(t)) t = survivors[0];
+          else if (pressed & (BTN_LIGHT | BTN_DASH)) {
+            t = survivors[(survivors.indexOf(t) + 1) % survivors.length];
+          }
+          if (t !== this.spectateTarget) {
+            this.spectateTarget = t;
+            const nm = this.metas.get(t)?.name ?? "?";
+            this.ui.setCenter("KO!", `spectating ${nm} — attack to cycle`);
+          }
+        } else {
+          this.spectateTarget = null;
+        }
+      } else {
+        this.spectatePrevButtons = 0;
+        this.spectateTarget = null;
+      }
     }
 
     // Countdown display + beeps.
@@ -578,6 +698,8 @@ export class GameClient {
           this.sim.local_anim(),
           dtSec,
           this.myPowerup,
+          this.myIntangible,
+          this.myGrounded,
         );
         focus = [px, py, pz];
       } else {
@@ -588,7 +710,16 @@ export class GameClient {
         if (this.phase.type === "MatchEnd" && id === this.phase.winner) {
           anim = ANIM_DANCE; // champion gets a dance
         }
-        this.renderer.setPlayerState(id, smp.pos, smp.yaw, anim, dtSec, smp.powerup);
+        this.renderer.setPlayerState(
+          id,
+          smp.pos,
+          smp.yaw,
+          anim,
+          dtSec,
+          smp.powerup,
+          smp.intangible,
+          smp.grounded,
+        );
         if (id === this.myId) {
           focus = smp.alive ? smp.pos : [0, 1, 0];
         } else if (this.sim) {
@@ -600,6 +731,13 @@ export class GameClient {
           }
         }
       }
+    }
+
+    // Spectator camera: follow the chosen survivor instead of arena center.
+    if (this.phase.type === "Playing" && !this.localAlive && this.spectateTarget !== null) {
+      const buf = this.buffers.get(this.spectateTarget);
+      const smp = buf ? this.sampleBuffer(buf, renderTick) : null;
+      if (smp) focus = smp.pos;
     }
 
     // Projectiles: interpolate each id's sample buffer at the render tick.
@@ -639,6 +777,7 @@ export class GameClient {
       this.myPowerupTicks / constants.tickRate,
       "#" + (POWERUP_COLORS[this.myPowerup] ?? 0xffffff).toString(16).padStart(6, "0"),
     );
+    this.lastFocus = focus;
     this.renderer.render(dtSec, focus, this.input.camYaw, this.input.camPitch);
   }
 }

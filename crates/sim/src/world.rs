@@ -151,6 +151,7 @@ impl GameSim {
             body.set_translation(vector![pos[0], pos[1], pos[2]], true);
             body.set_linvel(vector![0.0, 0.0, 0.0], true);
             p.state = CharState::default();
+            p.state.invuln = consts().spawn_invuln_ticks;
             p.damage = 0;
             p.alive = true;
         }
@@ -246,6 +247,11 @@ impl GameSim {
             return;
         };
         if !t.alive || t.proxy {
+            return;
+        }
+        // Intangible: dashing or spawn-protected targets take no hit at all
+        // (covers melee, slam, gun, and bomb — this is the one choke point).
+        if t.state.dash_ticks > 0 || t.state.invuln > 0 {
             return;
         }
         let mut imp_mult = 1.0f32;
@@ -381,11 +387,18 @@ impl GameSim {
 
                 // Melee swings during the active window.
                 if attack_phase(&p.state) == AttackPhase::Active {
-                    let heavy = p.state.attack.kind == AttackKind::Heavy;
-                    let (reach, radius, impulse, damage) = if heavy {
-                        (c.heavy_reach, c.heavy_hit_radius, c.heavy_impulse, c.heavy_damage)
-                    } else {
-                        (c.light_reach, c.light_hit_radius, c.light_impulse, c.light_damage)
+                    let kind = p.state.attack.kind;
+                    let heavy = kind == AttackKind::Heavy;
+                    // AirLight uses reach 0 → a sphere centered on the attacker
+                    // (a quick 360° spin), faster and weaker than a grounded light.
+                    let (reach, radius, impulse, damage) = match kind {
+                        AttackKind::Heavy => {
+                            (c.heavy_reach, c.heavy_hit_radius, c.heavy_impulse, c.heavy_damage)
+                        }
+                        AttackKind::AirLight => {
+                            (0.0, c.air_light_hit_radius, c.air_light_impulse, c.air_light_damage)
+                        }
+                        _ => (c.light_reach, c.light_hit_radius, c.light_impulse, c.light_damage),
                     };
                     let fwd = facing_dir(p.state.facing);
                     let origin = my_pos + fwd * reach;
@@ -741,8 +754,10 @@ impl GameSim {
             return AnimState::Dash;
         }
         match (st.attack.kind, attack_phase(st)) {
-            (AttackKind::Light, AttackPhase::Windup) => return AnimState::WindupLight,
-            (AttackKind::Light, _) => return AnimState::SwingLight,
+            (AttackKind::Light | AttackKind::AirLight, AttackPhase::Windup) => {
+                return AnimState::WindupLight
+            }
+            (AttackKind::Light | AttackKind::AirLight, _) => return AnimState::SwingLight,
             (AttackKind::Heavy, AttackPhase::Windup) => return AnimState::WindupHeavy,
             (AttackKind::Heavy, _) => return AnimState::SwingHeavy,
             _ => {}
@@ -1236,5 +1251,199 @@ mod island_reset_repro {
             deaths.is_empty(),
             "players fell through reset islands: {deaths:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+    use crate::types::buttons;
+
+    fn inp(mx: f32, mz: f32, yaw: f32, btn: u8) -> PlayerInput {
+        PlayerInput { move_x: mx, move_z: mz, yaw, buttons: btn }
+    }
+
+    /// Spawn invulnerability blocks incoming hits, then expires.
+    #[test]
+    fn spawn_invuln_blocks_then_expires() {
+        let mut sim = GameSim::new(true);
+        sim.add_player(0, false, [0.0, 1.05, 0.0]); // attacker, faces +Z
+        sim.add_player(1, false, [0.0, 1.05, 1.3]); // target in front
+        sim.respawn(1, [0.0, 1.05, 1.3]); // grants spawn invuln
+        assert!(sim.snapshot(1).unwrap().state.invuln > 0);
+
+        // Attacker swings while the target is invulnerable → no damage.
+        let mut inputs = BTreeMap::new();
+        inputs.insert(0, inp(0.0, 0.0, 0.0, buttons::LIGHT));
+        for t in 0..25 {
+            sim.step(&inputs);
+            if t == 0 {
+                inputs.insert(0, inp(0.0, 0.0, 0.0, 0));
+            }
+        }
+        assert_eq!(sim.snapshot(1).unwrap().damage, 0, "invuln should block the hit");
+
+        // Wait out the invuln window, then a fresh swing lands.
+        let grace = consts().spawn_invuln_ticks as u32;
+        for _ in 0..grace {
+            sim.step(&BTreeMap::new());
+        }
+        assert_eq!(sim.snapshot(1).unwrap().state.invuln, 0);
+        let mut hit = false;
+        let mut inputs = BTreeMap::new();
+        inputs.insert(0, inp(0.0, 0.0, 0.0, buttons::LIGHT));
+        for t in 0..25 {
+            let evs = sim.step(&inputs);
+            if t == 0 {
+                inputs.insert(0, inp(0.0, 0.0, 0.0, 0));
+            }
+            if evs.iter().any(|e| matches!(e, SimEvent::Hit { target: 1, .. })) {
+                hit = true;
+            }
+        }
+        assert!(hit, "hit should land once invuln expires");
+        assert!(sim.snapshot(1).unwrap().damage > 0);
+    }
+
+    /// Attacking drops your own spawn protection.
+    #[test]
+    fn attack_cancels_invuln() {
+        let mut sim = GameSim::new(true);
+        sim.add_player(0, false, [0.0, 1.05, 0.0]);
+        sim.respawn(0, [0.0, 1.05, 0.0]);
+        assert!(sim.snapshot(0).unwrap().state.invuln > 0);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(0, inp(0.0, 0.0, 0.0, buttons::LIGHT));
+        sim.step(&inputs);
+        assert_eq!(
+            sim.snapshot(0).unwrap().state.invuln,
+            0,
+            "throwing a light attack should cancel spawn invuln"
+        );
+    }
+
+    /// A dashing target takes no hit from a slam that would otherwise connect.
+    #[test]
+    fn dash_grants_iframes_vs_slam() {
+        let hit_landed = |target_dashes: bool| {
+            let mut sim = GameSim::new(true);
+            sim.add_player(0, false, [0.2, 2.0, 0.0]); // attacker, airborne above
+            sim.add_player(1, false, [0.0, 1.05, 0.0]); // target, at the impact point
+            let mut hit = false;
+            for t in 0..30u32 {
+                let mut inputs = BTreeMap::new();
+                // Attacker slams (heavy while airborne) on the first tick.
+                inputs.insert(0, inp(0.0, 0.0, 0.0, if t == 0 { buttons::HEAVY } else { 0 }));
+                if target_dashes {
+                    inputs.insert(1, inp(1.0, 0.0, 0.0, if t == 0 { buttons::DASH } else { 0 }));
+                }
+                for ev in sim.step(&inputs) {
+                    if matches!(ev, SimEvent::Hit { target: 1, .. }) {
+                        hit = true;
+                    }
+                }
+            }
+            hit
+        };
+        assert!(hit_landed(false), "control: stationary target should be slammed");
+        assert!(!hit_landed(true), "dashing target should be intangible to the slam");
+    }
+
+    /// Directional influence bends a launch trajectory without neutering it.
+    #[test]
+    fn di_shifts_launch_trajectory() {
+        let launch_and_di = |di: f32| {
+            let mut sim = GameSim::new(true);
+            sim.add_player(0, false, [0.0, 1.05, 0.0]); // attacker faces +Z
+            sim.add_player(1, false, [0.0, 1.05, 1.3]); // target
+            for _ in 0..20 {
+                sim.step(&BTreeMap::new());
+            }
+            // Attacker lands a light hit → target launched in +Z.
+            let mut inputs = BTreeMap::new();
+            inputs.insert(0, inp(0.0, 0.0, 0.0, buttons::LIGHT));
+            for _ in 0..12 {
+                sim.step(&inputs);
+                inputs.insert(0, inp(0.0, 0.0, 0.0, 0));
+            }
+            assert!(sim.snapshot(1).unwrap().state.launched > 0, "target should be launched");
+            // Hold DI sideways while launched.
+            let mut inputs = BTreeMap::new();
+            inputs.insert(1, inp(di, 0.0, 0.0, 0));
+            for _ in 0..18 {
+                sim.step(&inputs);
+            }
+            sim.snapshot(1).unwrap()
+        };
+        let none = launch_and_di(0.0);
+        let right = launch_and_di(1.0);
+        assert!(
+            right.pos[0] - none.pos[0] > 0.3,
+            "DI should push the launch sideways (dx = {})",
+            right.pos[0] - none.pos[0]
+        );
+        assert!(none.pos[2] > 1.4, "launch itself should still carry the target in +Z");
+    }
+
+    /// Aerial LIGHT is a 360° spin: it hits a target behind the attacker,
+    /// where a grounded light (a forward reach) would miss.
+    #[test]
+    fn air_light_hits_behind_grounded_misses() {
+        let connects = |airborne: bool| {
+            let mut sim = GameSim::new(true);
+            sim.add_player(0, false, [0.0, 1.05, 0.0]); // attacker faces +Z (yaw 0)
+            sim.add_player(1, false, [0.0, 1.05, -0.8]); // target BEHIND
+            let mut inputs = BTreeMap::new();
+            let mut hit = false;
+            for t in 0..24u32 {
+                let mut i = BTreeMap::new();
+                if airborne {
+                    // Jump, then LIGHT while rising (→ AirLight).
+                    if t == 0 {
+                        i.insert(0, inp(0.0, 0.0, 0.0, buttons::JUMP));
+                    } else if t == 2 {
+                        i.insert(0, inp(0.0, 0.0, 0.0, buttons::LIGHT));
+                    }
+                } else if t == 0 {
+                    i.insert(0, inp(0.0, 0.0, 0.0, buttons::LIGHT));
+                }
+                inputs = i;
+                for ev in sim.step(&inputs) {
+                    if matches!(ev, SimEvent::Hit { target: 1, .. }) {
+                        hit = true;
+                    }
+                }
+            }
+            let _ = inputs;
+            hit
+        };
+        assert!(connects(true), "air light should hit a target behind the attacker");
+        assert!(!connects(false), "grounded light should miss a target behind");
+    }
+
+    /// The new attack/DI/i-frame paths stay deterministic.
+    #[test]
+    fn depth_changes_are_deterministic() {
+        let run = || {
+            let mut sim = GameSim::new(true);
+            sim.add_player(0, false, [0.0, 1.05, 0.0]);
+            sim.respawn(0, [0.0, 1.05, 0.0]);
+            let mut inputs = BTreeMap::new();
+            for t in 0..200u32 {
+                let btn = match t % 20 {
+                    0 => buttons::JUMP,
+                    2 => buttons::LIGHT,
+                    8 => buttons::DASH,
+                    _ => 0,
+                };
+                inputs.insert(0, inp(0.6, 0.2, 0.0, btn));
+                sim.step(&inputs);
+            }
+            sim.snapshot(0).unwrap()
+        };
+        let a = run();
+        let b = run();
+        assert_eq!(a.pos, b.pos);
+        assert_eq!(a.vel, b.vel);
     }
 }

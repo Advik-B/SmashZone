@@ -40,30 +40,6 @@ export async function loadCharacterModel(): Promise<void> {
   }
 }
 
-function makeNameSprite(name: string): THREE.Sprite {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 64;
-  const ctx = canvas.getContext("2d")!;
-  ctx.font = "bold 36px system-ui, sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "rgba(0,0,0,0.45)";
-  ctx.beginPath();
-  const w = Math.min(240, ctx.measureText(name).width + 32);
-  ctx.roundRect(128 - w / 2, 8, w, 48, 12);
-  ctx.fill();
-  ctx.fillStyle = "#fff";
-  ctx.fillText(name, 128, 34);
-  const tex = new THREE.CanvasTexture(canvas);
-  const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: tex, depthWrite: false }),
-  );
-  sprite.scale.set(2.2, 0.55, 1);
-  sprite.position.y = 1.75;
-  return sprite;
-}
-
 interface ClipPlan {
   name: string;
   timeScale: number;
@@ -118,6 +94,11 @@ export class PlayerVisual {
   private auraMat: THREE.MeshBasicMaterial;
   private curPowerup = 0;
   readonly slotColor: number;
+  private name: string;
+  private nameCanvas: HTMLCanvasElement;
+  private nameCtx: CanvasRenderingContext2D;
+  private nameTex: THREE.CanvasTexture;
+  private curDamage = -1;
 
   constructor(name: string, slot: number) {
     this.slotColor = SLOT_COLORS[slot % SLOT_COLORS.length];
@@ -138,7 +119,54 @@ export class PlayerVisual {
     this.aura.rotation.x = Math.PI / 2;
     this.aura.position.y = -0.85;
     this.aura.visible = false;
-    this.group.add(this.rig, this.aura, makeNameSprite(name));
+
+    // Nameplate (name + live damage %), redrawn on damage change.
+    this.name = name;
+    this.nameCanvas = document.createElement("canvas");
+    this.nameCanvas.width = 256;
+    this.nameCanvas.height = 96;
+    this.nameCtx = this.nameCanvas.getContext("2d")!;
+    this.nameTex = new THREE.CanvasTexture(this.nameCanvas);
+    const nameSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: this.nameTex, depthWrite: false }),
+    );
+    nameSprite.scale.set(2.4, 0.9, 1);
+    nameSprite.position.y = 1.9;
+    this.drawNameplate();
+
+    this.group.add(this.rig, this.aura, nameSprite);
+  }
+
+  private drawNameplate() {
+    const ctx = this.nameCtx;
+    const cv = this.nameCanvas;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    // Name pill.
+    ctx.font = "bold 34px system-ui, sans-serif";
+    const w = Math.min(240, ctx.measureText(this.name).width + 32);
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.beginPath();
+    ctx.roundRect(128 - w / 2, 6, w, 44, 12);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(this.name, 128, 28);
+    // Damage % (heat ramp matching the HUD).
+    if (this.curDamage > 0) {
+      const heat = Math.min(1, this.curDamage / 150);
+      ctx.font = "bold 30px system-ui, sans-serif";
+      ctx.fillStyle = `rgb(255, ${Math.round(255 - heat * 190)}, ${Math.round(255 - heat * 230)})`;
+      ctx.fillText(`${this.curDamage}%`, 128, 74);
+    }
+    this.nameTex.needsUpdate = true;
+  }
+
+  /** Update the nameplate's damage readout (redraws only on change). */
+  setDamage(dmg: number) {
+    if (dmg === this.curDamage) return;
+    this.curDamage = dmg;
+    this.drawNameplate();
   }
 
   setPowerup(kind: number) {
@@ -216,7 +244,14 @@ export class PlayerVisual {
     this.current = action;
   }
 
-  update(anim: number, yaw: number, dtSec: number, powerupKind = 0) {
+  update(
+    anim: number,
+    yaw: number,
+    dtSec: number,
+    powerupKind = 0,
+    intangible = false,
+    grounded = true,
+  ) {
     this.setPowerup(powerupKind);
     if (anim !== this.lastAnim) {
       this.animTime = 0;
@@ -224,6 +259,11 @@ export class PlayerVisual {
       this.play(planFor(anim));
     }
     this.animTime += dtSec;
+
+    // Intangibility blink (spawn protection / dash i-frames).
+    this.rig.visible = !intangible || anim === ANIM.Dead
+      ? true
+      : Math.floor(performance.now() / 60) % 2 === 0;
 
     if (this.aura.visible) {
       this.aura.rotation.z += dtSec * 1.8;
@@ -235,11 +275,36 @@ export class PlayerVisual {
     this.group.visible = anim !== ANIM.Dead || this.animTime < 1.2;
     this.group.rotation.y = yaw;
 
-    // Launched: tumble the whole rig.
+    // Attack accents layered on the shared "Punch" clip so light / heavy /
+    // air-light / slam read distinctly. Offsets are in rig-local space, so +z
+    // is "forward" (the group already carries the facing yaw).
+    const t = this.animTime;
+    let poseZ = 0;
+    let spinY = 0;
+    let pitchX = 0;
+    switch (anim) {
+      case ANIM.SwingLight:
+        if (grounded) poseZ = 0.25 * Math.exp(-t * 10); // quick forward jab
+        else spinY = Math.min(t * 40, Math.PI * 2); // air-light: 360° spin
+        break;
+      case ANIM.WindupHeavy:
+        poseZ = -0.18 * Math.min(1, t * 6); // wind up (pull back)
+        break;
+      case ANIM.SwingHeavy:
+        poseZ = 0.4 * Math.exp(-t * 7); // heavy lunge forward
+        break;
+      case ANIM.Slam:
+        pitchX = 0.5; // dive-bomb tuck
+        break;
+    }
+    this.rig.position.z = poseZ;
+    this.rig.rotation.y = spinY;
+
+    // Launched: tumble the whole rig (overrides the attack pitch).
     if (anim === ANIM.Launched) {
       this.rig.rotation.x = this.animTime * 7;
     } else {
-      this.rig.rotation.x = 0;
+      this.rig.rotation.x = pitchX;
     }
 
     this.mixer?.update(dtSec);
