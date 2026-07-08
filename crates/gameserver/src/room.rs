@@ -65,6 +65,8 @@ struct RoomPlayer {
     epoch: u32,
     /// Ticks spent disconnected (for grace-window expiry).
     gone_ticks: u32,
+    /// Server-controlled practice bot (no real socket).
+    bot: bool,
 }
 
 /// If a client stops sending inputs for this long (throttled tab, hiccup),
@@ -109,6 +111,8 @@ struct Room {
     code: String,
     sim: GameSim,
     players: BTreeMap<PlayerId, RoomPlayer>,
+    /// AI brains for bot players (keyed by the same PlayerId).
+    bots: BTreeMap<PlayerId, crate::bot::BotBrain>,
     phase: RoomPhase,
     tick: u32,
     pending_events: Vec<SimEvent>,
@@ -117,8 +121,17 @@ struct Room {
 }
 
 impl Room {
+    /// Host = lowest-id human (bots can never host).
     fn host(&self) -> Option<PlayerId> {
-        self.players.keys().next().copied()
+        self.players
+            .iter()
+            .find(|(_, p)| !p.bot)
+            .map(|(&id, _)| id)
+    }
+
+    /// Count of real (non-bot) players, connected or in the reconnect window.
+    fn humans(&self) -> usize {
+        self.players.values().filter(|p| !p.bot).count()
     }
 
     fn phase_msg(&self) -> Phase {
@@ -208,6 +221,7 @@ impl Room {
             id,
             name: sanitize_name(&name),
             slot: id,
+            bot: false,
         };
         // Announce to existing players first.
         self.broadcast(&ServerMsg::PlayerJoined { meta: meta.clone() });
@@ -235,6 +249,7 @@ impl Room {
                 connected: true,
                 epoch: 0,
                 gone_ticks: 0,
+                bot: false,
             },
         );
 
@@ -332,6 +347,72 @@ impl Room {
         }
     }
 
+    /// Add a practice bot (host + lobby gated by the caller).
+    fn handle_add_bot(&mut self) {
+        let c = consts();
+        if self.players.len() >= c.max_players as usize {
+            return;
+        }
+        let id = (0..c.max_players)
+            .find(|i| !self.players.contains_key(i))
+            .unwrap();
+        let meta = PlayerMeta {
+            id,
+            name: format!("BOT {id}"),
+            slot: id,
+            bot: true,
+        };
+        self.broadcast(&ServerMsg::PlayerJoined { meta: meta.clone() });
+        let spawn = self.random_spawn();
+        self.sim.add_player(id, false, spawn);
+        if !matches!(self.phase, RoomPhase::Lobby) {
+            self.sim.kill(id);
+        }
+        // Bots have no socket: a dummy channel whose receiver is dropped.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        self.players.insert(
+            id,
+            RoomPlayer {
+                meta,
+                tx,
+                inputs: VecDeque::new(),
+                last_input: PlayerInput::default(),
+                last_seq: 0,
+                starved: 0,
+                score: 0,
+                in_round: false,
+                token: String::new(),
+                connected: true,
+                epoch: 0,
+                gone_ticks: 0,
+                bot: true,
+            },
+        );
+        self.bots.insert(id, crate::bot::BotBrain::new(id));
+        tracing::info!("room {}: bot {id} added", self.code);
+    }
+
+    fn handle_remove_bot(&mut self, id: PlayerId) {
+        if self.players.get(&id).map(|p| p.bot).unwrap_or(false) {
+            self.players.remove(&id);
+            self.bots.remove(&id);
+            self.sim.remove_player(id);
+            self.broadcast(&ServerMsg::PlayerLeft { id });
+            tracing::info!("room {}: bot {id} removed", self.code);
+        }
+    }
+
+    /// Remove every bot (called when the last human leaves so the room can idle).
+    fn despawn_all_bots(&mut self) {
+        let ids: Vec<PlayerId> = self.bots.keys().copied().collect();
+        for id in ids {
+            self.players.remove(&id);
+            self.bots.remove(&id);
+            self.sim.remove_player(id);
+            self.broadcast(&ServerMsg::PlayerLeft { id });
+        }
+    }
+
     fn handle_msg(&mut self, id: PlayerId, msg: ClientMsg) {
         match msg {
             ClientMsg::Input(input) => {
@@ -363,6 +444,16 @@ impl Room {
             ClientMsg::Ping { t } => {
                 if let Some(p) = self.players.get(&id) {
                     let _ = p.tx.send(encode(&ServerMsg::Pong { t }));
+                }
+            }
+            ClientMsg::AddBot => {
+                if Some(id) == self.host() && matches!(self.phase, RoomPhase::Lobby) {
+                    self.handle_add_bot();
+                }
+            }
+            ClientMsg::RemoveBot { id: bot_id } => {
+                if Some(id) == self.host() && matches!(self.phase, RoomPhase::Lobby) {
+                    self.handle_remove_bot(bot_id);
                 }
             }
         }
@@ -425,8 +516,12 @@ impl Room {
         // Drop players whose reconnect grace window has elapsed.
         self.sweep_disconnected();
 
-        // Nobody here: fall back to lobby instead of cycling rounds.
-        if self.players.is_empty() {
+        // No humans left: drop any bots and idle back to lobby (so a bot-only
+        // room can't tick forever, and idle cleanup can reclaim it).
+        if self.humans() == 0 {
+            if !self.bots.is_empty() {
+                self.despawn_all_bots();
+            }
             if !matches!(self.phase, RoomPhase::Lobby) {
                 self.phase = RoomPhase::Lobby;
             }
@@ -464,6 +559,9 @@ impl Room {
         let mut inputs: BTreeMap<PlayerId, PlayerInput> = BTreeMap::new();
         let allowed = self.movement_allowed();
         for (&id, p) in self.players.iter_mut() {
+            if p.bot {
+                continue; // bot inputs come from the brains below
+            }
             if let Some(msg) = p.inputs.pop_front() {
                 p.starved = 0;
                 p.last_seq = msg.seq;
@@ -481,6 +579,14 @@ impl Room {
             }
             if allowed {
                 inputs.insert(id, p.last_input);
+            }
+        }
+        // Bot brains produce their inputs like any other player.
+        if allowed {
+            let bot_ids: Vec<PlayerId> = self.bots.keys().copied().collect();
+            for bid in bot_ids {
+                let input = crate::bot::think(&self.sim, bid, self.bots.get_mut(&bid).unwrap());
+                inputs.insert(bid, input);
             }
         }
 
@@ -583,6 +689,9 @@ impl Room {
                 if !rp.connected {
                     flags |= player_flags::DISCONNECTED;
                 }
+                if snap.state.invuln > 0 || snap.state.dash_ticks > 0 {
+                    flags |= player_flags::INTANGIBLE;
+                }
                 Some(NetPlayer {
                     id,
                     px: protocol::quant_pos(snap.pos[0]),
@@ -630,8 +739,8 @@ impl Room {
             .collect();
 
         for (&id, p) in &self.players {
-            // No live socket for a disconnected player awaiting reconnect.
-            if !p.connected {
+            // No live socket for a disconnected player awaiting reconnect, or a bot.
+            if !p.connected || p.bot {
                 continue;
             }
             let msg = ServerMsg::Snapshot(SnapshotMsg {
@@ -659,6 +768,7 @@ pub fn spawn_room(code: String, state: Arc<AppState>) -> RoomHandle {
             code: code.clone(),
             sim: GameSim::new(true),
             players: BTreeMap::new(),
+            bots: BTreeMap::new(),
             phase: RoomPhase::Lobby,
             tick: 0,
             pending_events: Vec::new(),
@@ -733,6 +843,7 @@ mod tests {
             code: "TEST".into(),
             sim: GameSim::new(true),
             players: BTreeMap::new(),
+            bots: BTreeMap::new(),
             phase: RoomPhase::Lobby,
             tick: 0,
             pending_events: Vec::new(),
@@ -938,6 +1049,105 @@ mod reconnect_tests {
 }
 
 #[cfg(test)]
+mod bot_tests {
+    use super::tests::test_room;
+    use super::*;
+
+    #[test]
+    fn non_host_add_bot_is_ignored() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap(); // id 0 = host
+        room.handle_join("B".into(), None).unwrap(); // id 1
+        room.handle_msg(1, ClientMsg::AddBot); // non-host
+        assert_eq!(room.players.len(), 2, "only the host may add bots");
+    }
+
+    #[test]
+    fn host_adds_bot_and_it_is_marked() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot);
+        assert_eq!(room.players.len(), 2);
+        let bot = room.players.values().find(|p| p.bot).expect("a bot exists");
+        assert!(bot.meta.bot);
+        assert_eq!(room.bots.len(), 1);
+        // Host stays the human even though the bot may hold a different id.
+        assert_eq!(room.host(), Some(0));
+    }
+
+    #[test]
+    fn add_bot_respects_max_players() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        for _ in 0..consts().max_players {
+            room.handle_msg(0, ClientMsg::AddBot);
+        }
+        assert_eq!(room.players.len(), consts().max_players as usize);
+    }
+
+    #[test]
+    fn bot_moves_toward_human_in_play() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot);
+        let bot_id = *room.bots.keys().next().unwrap();
+        room.handle_msg(0, ClientMsg::StartMatch);
+        for _ in 0..(consts().round_countdown_ticks + 2) {
+            room.tick();
+        }
+        assert!(matches!(room.phase, RoomPhase::Playing { .. }));
+        // Place the human far from the bot, then let the bot chase.
+        room.sim.respawn(0, [8.0, 1.05, 0.0]);
+        room.sim.respawn(bot_id, [-8.0, 1.05, 0.0]);
+        let start = room.sim.snapshot(bot_id).unwrap().pos;
+        for _ in 0..90 {
+            room.tick();
+        }
+        let end = room.sim.snapshot(bot_id).unwrap().pos;
+        let moved = ((end[0] - start[0]).powi(2) + (end[2] - start[2]).powi(2)).sqrt();
+        assert!(moved > 1.0, "bot should chase the human (moved {moved})");
+    }
+
+    #[test]
+    fn solo_human_plus_bot_round_ends_when_human_dies() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::StartMatch);
+        for _ in 0..(consts().round_countdown_ticks + 2) {
+            room.tick();
+        }
+        assert!(matches!(room.phase, RoomPhase::Playing { .. }));
+        // Drop the human below the kill plane.
+        room.sim.respawn(0, [0.0, consts().kill_plane_y - 5.0, 0.0]);
+        let mut ended = false;
+        for _ in 0..120 {
+            room.tick();
+            if matches!(room.phase, RoomPhase::RoundEnd { .. } | RoomPhase::MatchEnd) {
+                ended = true;
+                break;
+            }
+        }
+        assert!(ended, "round should end when the lone human is knocked out");
+    }
+
+    #[test]
+    fn bots_despawn_when_last_human_leaves() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot);
+        assert_eq!(room.bots.len(), 2);
+        // Human leaves the lobby (removed immediately), then a tick sweeps bots.
+        room.handle_leave(0);
+        room.tick();
+        assert_eq!(room.humans(), 0);
+        assert!(room.bots.is_empty(), "bots should be despawned");
+        assert!(room.players.is_empty(), "room should be empty for idle cleanup");
+    }
+}
+
+#[cfg(test)]
 mod stale_input_tests {
     use super::*;
     use protocol::InputMsg;
@@ -951,6 +1161,7 @@ mod stale_input_tests {
             code: "TST2".into(),
             sim: GameSim::new(true),
             players: BTM::new(),
+            bots: BTM::new(),
             phase: RoomPhase::Lobby,
             tick: 0,
             pending_events: Vec::new(),

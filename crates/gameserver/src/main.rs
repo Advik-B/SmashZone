@@ -1,3 +1,4 @@
+mod bot;
 mod net;
 mod room;
 

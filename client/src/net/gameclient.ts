@@ -1,7 +1,9 @@
 import {
   ClientSim,
+  encode_add_bot,
   encode_input,
   encode_ping,
+  encode_remove_bot,
   encode_rematch,
   encode_start_match,
 } from "../wasm/pkg/sim_wasm";
@@ -44,6 +46,7 @@ interface RemoteSample {
   anim: number;
   alive: boolean;
   powerup: number;
+  intangible: boolean;
 }
 
 interface ProjSample {
@@ -97,6 +100,7 @@ export class GameClient {
   private projBuffers = new Map<number, { kind: number; samples: ProjSample[] }>();
   private myPowerup = 0;
   private myPowerupTicks = 0;
+  private myIntangible = false;
   private reconnecting = false;
   private disconnectedIds = new Set<number>();
   private spectateTarget: number | null = null;
@@ -167,6 +171,8 @@ export class GameClient {
       code: this.code,
       onStart: () => this.conn.send(encode_start_match()),
       onRematch: () => this.conn.send(encode_rematch()),
+      onAddBot: () => this.conn.send(encode_add_bot()),
+      onRemoveBot: (id: number) => this.conn.send(encode_remove_bot(id)),
     };
   }
 
@@ -196,7 +202,7 @@ export class GameClient {
         break;
       }
       case "PlayerJoined": {
-        const m = { id: msg.id, name: msg.name, slot: msg.slot };
+        const m = { id: msg.id, name: msg.name, slot: msg.slot, bot: msg.bot };
         this.metas.set(m.id, m);
         this.buffers.set(m.id, []);
         this.renderer.addPlayer(m.id, m.name, m.slot);
@@ -319,6 +325,7 @@ export class GameClient {
         anim: ps.anim,
         alive: ps.alive,
         powerup: ps.powerup,
+        intangible: ps.intangible,
       });
       if (buf.length > 40) buf.shift();
       if (ps.disconnected) nextDisc.add(ps.id);
@@ -378,6 +385,8 @@ export class GameClient {
       this.myDamage = s.local.damage;
       this.myPowerup = s.local.state.powerup ?? 0;
       this.myPowerupTicks = s.local.state.powerup_ticks ?? 0;
+      this.myIntangible =
+        (s.local.state.invuln ?? 0) > 0 || (s.local.state.dash_ticks ?? 0) > 0;
       // Sync the prediction world's powerup so gun/bomb inputs predict as
       // fire (not melee) immediately after a pickup.
       this.sim.set_local_powerup(this.myPowerup, this.myPowerupTicks);
@@ -581,6 +590,7 @@ export class GameClient {
           anim: b.anim,
           alive: b.alive,
           powerup: b.powerup,
+          intangible: b.intangible,
         };
       }
     }
@@ -679,6 +689,7 @@ export class GameClient {
           this.sim.local_anim(),
           dtSec,
           this.myPowerup,
+          this.myIntangible,
         );
         focus = [px, py, pz];
       } else {
@@ -689,7 +700,7 @@ export class GameClient {
         if (this.phase.type === "MatchEnd" && id === this.phase.winner) {
           anim = ANIM_DANCE; // champion gets a dance
         }
-        this.renderer.setPlayerState(id, smp.pos, smp.yaw, anim, dtSec, smp.powerup);
+        this.renderer.setPlayerState(id, smp.pos, smp.yaw, anim, dtSec, smp.powerup, smp.intangible);
         if (id === this.myId) {
           focus = smp.alive ? smp.pos : [0, 1, 0];
         } else if (this.sim) {

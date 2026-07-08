@@ -1,4 +1,5 @@
 import type { Phase, PlayerMeta, Score } from "../net/messages";
+import constants from "../../../shared/constants.json";
 import { isTouchDevice, savedInputMode, type InputMode } from "../game/input";
 import type { Quality } from "../game/quality";
 import { SLOT_COLORS } from "../game/players";
@@ -125,6 +126,8 @@ export interface PhaseCtx {
   code: string;
   onStart: () => void;
   onRematch: () => void;
+  onAddBot: () => void;
+  onRemoveBot: (id: number) => void;
 }
 
 export class UI {
@@ -415,27 +418,37 @@ export class UI {
     if (!this.overlay) return;
     if (phase.type === "Lobby") {
       const isHost = ctx.myId === ctx.host;
+      const canAddBot = isHost && ctx.metas.size < constants.maxPlayers;
       this.overlay.innerHTML = `
         <div class="lobby-panel">
           <div class="hint">share this code</div>
-          <div class="code">${ctx.code}</div>
+          <div class="code">${esc(ctx.code)}</div>
           <div class="players">${[...ctx.metas.values()]
-            .map(
-              (m) =>
-                `<div class="pcard" style="--slot:${colorOf(m.slot)}">${esc(m.name)}${
-                  m.id === ctx.host ? " ★" : ""
-                }</div>`,
-            )
+            .map((m) => {
+              const tag = m.bot ? `<span class="bot-tag">BOT</span>` : "";
+              const star = m.id === ctx.host ? " ★" : "";
+              const rm =
+                isHost && m.bot
+                  ? `<button class="bot-x" data-bot="${m.id}" aria-label="remove bot">✕</button>`
+                  : "";
+              return `<div class="pcard" style="--slot:${colorOf(m.slot)}">${esc(m.name)}${tag}${star}${rm}</div>`;
+            })
             .join("")}</div>
           ${
             isHost
               ? `<button id="h-start" class="big-btn">START MATCH</button>`
               : `<div class="hint">waiting for the host to start…</div>`
           }
+          ${canAddBot ? `<button id="h-addbot" class="secondary">+ Add Bot</button>` : ""}
           <div class="hint">you can run around and brawl while you wait — falling off just respawns you</div>
         </div>`;
       const btn = document.getElementById("h-start");
       if (btn) btn.onclick = ctx.onStart;
+      const addBot = document.getElementById("h-addbot");
+      if (addBot) addBot.onclick = ctx.onAddBot;
+      for (const x of this.overlay.querySelectorAll<HTMLButtonElement>(".bot-x")) {
+        x.onclick = () => ctx.onRemoveBot(Number(x.dataset.bot));
+      }
     } else if (phase.type === "MatchEnd") {
       const isHost = ctx.myId === ctx.host;
       const winner = ctx.metas.get(phase.winner);

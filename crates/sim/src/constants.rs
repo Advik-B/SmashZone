@@ -48,9 +48,18 @@ pub struct Constants {
     pub heavy_impulse: f32,
     pub heavy_damage: u16,
 
+    pub air_light_windup_ticks: u8,
+    pub air_light_active_ticks: u8,
+    pub air_light_recovery_ticks: u8,
+    pub air_light_hit_radius: f32,
+    pub air_light_impulse: f32,
+    pub air_light_damage: u16,
+
     pub hit_upward_bias: f32,
     pub launch_scale_per_damage: f32,
     pub launched_min_ticks: u16,
+    pub di_accel: f32,
+    pub spawn_invuln_ticks: u16,
 
     pub kill_plane_y: f32,
     pub arena_tile_size: f32,

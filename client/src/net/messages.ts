@@ -7,6 +7,7 @@ export interface PlayerMeta {
   id: number;
   name: string;
   slot: number;
+  bot: boolean;
 }
 
 export interface PlayerState {
@@ -19,6 +20,7 @@ export interface PlayerState {
   launched: boolean;
   alive: boolean;
   disconnected: boolean;
+  intangible: boolean;
   damage: number;
   powerup: number;
 }
@@ -76,6 +78,8 @@ export interface CharSnapshot {
     grounded: boolean;
     powerup: number;
     powerup_ticks: number;
+    invuln: number;
+    dash_ticks: number;
     [k: string]: unknown;
   };
   damage: number;
@@ -103,7 +107,7 @@ export type ServerMsg =
       tick: number;
       token: string;
     }
-  | { type: "PlayerJoined"; id: number; name: string; slot: number }
+  | { type: "PlayerJoined"; id: number; name: string; slot: number; bot: boolean }
   | { type: "PlayerLeft"; id: number }
   | { type: "PhaseChange"; phase: Phase; tick: number }
   | { type: "Snapshot"; snapshot: Snapshot }

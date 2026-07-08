@@ -11,6 +11,8 @@ pub struct PlayerMeta {
     pub id: PlayerId,
     pub name: String,
     pub slot: u8,
+    /// True for server-controlled bots (appended — never reorder).
+    pub bot: bool,
 }
 
 /// Quantized per-tick input. move_x/move_z are -127..=127 mapped to -1..=1;
@@ -30,6 +32,9 @@ pub enum ClientMsg {
     StartMatch,
     Rematch,
     Ping { t: u32 },
+    /// Host-only, lobby-only: add / remove a practice bot.
+    AddBot,
+    RemoveBot { id: PlayerId },
 }
 
 /// Quantized remote-player state inside a snapshot.
@@ -79,6 +84,8 @@ pub mod player_flags {
     pub const ALIVE: u8 = 1 << 2;
     /// Player's socket dropped; slot held during the reconnect grace window.
     pub const DISCONNECTED: u8 = 1 << 3;
+    /// Invulnerable (spawn protection or mid-dash) — takes no hits.
+    pub const INTANGIBLE: u8 = 1 << 4;
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

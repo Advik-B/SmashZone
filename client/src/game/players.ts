@@ -244,7 +244,7 @@ export class PlayerVisual {
     this.current = action;
   }
 
-  update(anim: number, yaw: number, dtSec: number, powerupKind = 0) {
+  update(anim: number, yaw: number, dtSec: number, powerupKind = 0, intangible = false) {
     this.setPowerup(powerupKind);
     if (anim !== this.lastAnim) {
       this.animTime = 0;
@@ -252,6 +252,11 @@ export class PlayerVisual {
       this.play(planFor(anim));
     }
     this.animTime += dtSec;
+
+    // Intangibility blink (spawn protection / dash i-frames).
+    this.rig.visible = !intangible || anim === ANIM.Dead
+      ? true
+      : Math.floor(performance.now() / 60) % 2 === 0;
 
     if (this.aura.visible) {
       this.aura.rotation.z += dtSec * 1.8;

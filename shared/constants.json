@@ -41,9 +41,18 @@
   "heavyImpulse": 13.0,
   "heavyDamage": 24,
 
+  "airLightWindupTicks": 3,
+  "airLightActiveTicks": 6,
+  "airLightRecoveryTicks": 10,
+  "airLightHitRadius": 1.4,
+  "airLightImpulse": 6.5,
+  "airLightDamage": 9,
+
   "hitUpwardBias": 0.45,
   "launchScalePerDamage": 0.011,
   "launchedMinTicks": 20,
+  "diAccel": 14.0,
+  "spawnInvulnTicks": 90,
 
   "killPlaneY": -14.0,
   "arenaTileSize": 2.0,

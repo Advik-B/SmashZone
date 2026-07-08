@@ -33,6 +33,8 @@ pub enum AttackKind {
     None,
     Light,
     Heavy,
+    /// Airborne light attack: fast, weak, 360° (appended — never reorder).
+    AirLight,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
@@ -67,6 +69,9 @@ pub struct CharState {
     /// Set by movement when LIGHT is pressed holding gun/bomb; consumed
     /// (cleared) by the world step every tick on both server and client.
     pub fire_intent: bool,
+    /// Invulnerability ticks (spawn protection); no damage/knockback while > 0.
+    /// Appended for wire compat — never reorder CharState fields.
+    pub invuln: u16,
 }
 
 /// Precise local-player state sent to each client for prediction reconciliation.
