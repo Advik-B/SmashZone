@@ -10,6 +10,7 @@ export class Effects {
   private vel: Float32Array;
   private life: Float32Array;
   private next = 0;
+  private budget = MAX;
   private geo: THREE.BufferGeometry;
 
   constructor(scene: THREE.Scene) {
@@ -42,7 +43,7 @@ export class Effects {
     life: number,
   ) {
     const i = this.next;
-    this.next = (this.next + 1) % MAX;
+    this.next = (this.next + 1) % this.budget;
     this.pos[i * 3] = x;
     this.pos[i * 3 + 1] = y;
     this.pos[i * 3 + 2] = z;
@@ -77,6 +78,24 @@ export class Effects {
     for (let i = 0; i < 40; i++) {
       this.spawn(p.x, p.y, p.z, c, 6, 6, 0.8);
     }
+  }
+
+  /** Short-lived streak left behind while dashing (called per frame). */
+  dashTrail(p: THREE.Vector3, slotColor: number) {
+    const c = new THREE.Color(slotColor);
+    for (let i = 0; i < 2; i++) {
+      this.spawn(p.x, p.y + 0.5, p.z, c, 0.6, 0.3, 0.35);
+    }
+  }
+
+  /** Clamp the active particle count (quality setting). Retires excess slots. */
+  setBudget(n: number) {
+    this.budget = Math.max(1, Math.min(MAX, n));
+    for (let i = this.budget; i < MAX; i++) {
+      this.life[i] = 0;
+      this.pos[i * 3 + 1] = 9999;
+    }
+    if (this.next >= this.budget) this.next = 0;
   }
 
   update(dtSec: number) {

@@ -32,7 +32,7 @@ import { sfx } from "../game/audio";
 import { ANIM_DANCE } from "../game/players";
 import type { Renderer } from "../game/renderer";
 import type { InputManager } from "../game/input";
-import type { PhaseCtx, UI } from "../ui/ui";
+import { esc, type PhaseCtx, type UI } from "../ui/ui";
 
 const TICK_MS = 1000 / constants.tickRate;
 const INTERP_TICKS = (constants.interpDelayMs / 1000) * constants.tickRate;
@@ -99,6 +99,11 @@ export class GameClient {
   private myPowerupTicks = 0;
   private reconnecting = false;
   private disconnectedIds = new Set<number>();
+  private spectateTarget: number | null = null;
+  private spectatePrevButtons = 0;
+  private hitstopMs = 0;
+  private lastFocus: Vec3 = [0, 1, 0];
+  private lastHitBy = new Map<number, { attacker: number; t: number }>();
   destroyed = false;
 
   constructor(
@@ -261,6 +266,7 @@ export class GameClient {
         this.sim?.arena_reset();
         this.localAlive = true;
         this.aliveIds = new Set(this.metas.keys());
+        this.spectateTarget = null;
         break;
       case "Playing":
         this.roundStartTick = phase.roundStartTick;
@@ -316,6 +322,8 @@ export class GameClient {
       });
       if (buf.length > 40) buf.shift();
       if (ps.disconnected) nextDisc.add(ps.id);
+      // Live damage % over each head (data already on the wire).
+      this.renderer.setPlayerDamage(ps.id, ps.damage);
       if (this.phase.type === "Playing") {
         if (ps.alive) this.aliveIds.add(ps.id);
         else if (this.aliveIds.delete(ps.id)) this.refreshOverlay();
@@ -430,11 +438,19 @@ export class GameClient {
       case "Hit": {
         this.renderer.flashPlayer(ev.target);
         const p = this.renderer.playerPos(ev.target);
-        if (p) this.renderer.effects.hitBurst(p, ev.heavy);
+        if (p) {
+          this.renderer.effects.hitBurst(p, ev.heavy);
+          this.renderer.spawnDamage([p.x, p.y, p.z], ev.damage, ev.heavy);
+        }
         if (ev.heavy) sfx.hitHeavy();
         else sfx.hitLight();
         if (ev.target === this.myId) this.renderer.shake(ev.heavy ? 0.45 : 0.25);
         else if (ev.attacker === this.myId) this.renderer.shake(0.12);
+        // Kill-feed credit (valid 5 s) + local hitstop (extend-only).
+        this.lastHitBy.set(ev.target, { attacker: ev.attacker, t: performance.now() });
+        if (ev.target === this.myId || ev.attacker === this.myId) {
+          this.hitstopMs = Math.max(this.hitstopMs, ev.heavy ? 70 : 45);
+        }
         break;
       }
       case "Slam": {
@@ -451,6 +467,16 @@ export class GameClient {
         }
         sfx.death();
         if (ev.player === this.myId) this.renderer.shake(0.4);
+        // Kill feed: credit the last attacker within 5 s, else a solo fall.
+        const victim = esc(this.metas.get(ev.player)?.name ?? "?");
+        const credit = this.lastHitBy.get(ev.player);
+        if (credit && performance.now() - credit.t < 5000 && credit.attacker !== ev.player) {
+          const killer = esc(this.metas.get(credit.attacker)?.name ?? "?");
+          this.ui.addFeed(`${killer} knocked out ${victim}`);
+        } else {
+          this.ui.addFeed(`${victim} fell`);
+        }
+        this.lastHitBy.delete(ev.player);
         break;
       }
       case "PickupSpawn": {
@@ -566,6 +592,14 @@ export class GameClient {
     if (this.destroyed || !this.sim) return;
     const dtMs = Math.min(100, now - (this.lastUpdateMs || now));
     this.lastUpdateMs = now;
+    // Hitstop: freeze the world briefly on a solid hit for impact. Time still
+    // accrues into the accumulator so the sim catches up after (no input loss).
+    if (this.hitstopMs > 0) {
+      this.hitstopMs -= dtMs;
+      this.accumulator += dtMs;
+      this.renderer.render(0, this.lastFocus, this.input.camYaw, this.input.camPitch);
+      return;
+    }
     const dtSec = dtMs / 1000;
     this.input.update(dtSec);
 
@@ -585,8 +619,33 @@ export class GameClient {
       // Keep draining the sampler while frozen so button presses latched
       // during round-end/countdown don't fire on the first tick of the
       // next round.
-      this.input.sample();
+      const s = this.input.sample();
       this.prevButtons = 0;
+      // Spectator: while dead mid-round, follow a survivor; attack/dash cycles.
+      if (this.phase.type === "Playing" && !this.localAlive) {
+        const pressed = s.buttons & ~this.spectatePrevButtons;
+        this.spectatePrevButtons = s.buttons;
+        const survivors = [...this.aliveIds]
+          .filter((id) => id !== this.myId)
+          .sort((a, b) => a - b);
+        if (survivors.length > 0) {
+          let t = this.spectateTarget;
+          if (t === null || !survivors.includes(t)) t = survivors[0];
+          else if (pressed & (BTN_LIGHT | BTN_DASH)) {
+            t = survivors[(survivors.indexOf(t) + 1) % survivors.length];
+          }
+          if (t !== this.spectateTarget) {
+            this.spectateTarget = t;
+            const nm = this.metas.get(t)?.name ?? "?";
+            this.ui.setCenter("KO!", `spectating ${nm} — attack to cycle`);
+          }
+        } else {
+          this.spectateTarget = null;
+        }
+      } else {
+        this.spectatePrevButtons = 0;
+        this.spectateTarget = null;
+      }
     }
 
     // Countdown display + beeps.
@@ -644,6 +703,13 @@ export class GameClient {
       }
     }
 
+    // Spectator camera: follow the chosen survivor instead of arena center.
+    if (this.phase.type === "Playing" && !this.localAlive && this.spectateTarget !== null) {
+      const buf = this.buffers.get(this.spectateTarget);
+      const smp = buf ? this.sampleBuffer(buf, renderTick) : null;
+      if (smp) focus = smp.pos;
+    }
+
     // Projectiles: interpolate each id's sample buffer at the render tick.
     const projList: { id: number; kind: number; pos: Vec3 }[] = [];
     for (const [id, entry] of this.projBuffers) {
@@ -681,6 +747,7 @@ export class GameClient {
       this.myPowerupTicks / constants.tickRate,
       "#" + (POWERUP_COLORS[this.myPowerup] ?? 0xffffff).toString(16).padStart(6, "0"),
     );
+    this.lastFocus = focus;
     this.renderer.render(dtSec, focus, this.input.camYaw, this.input.camPitch);
   }
 }

@@ -2,6 +2,14 @@
 // One shared AudioContext, resumed on the first user gesture.
 
 let ctx: AudioContext | null = null;
+let masterGain: GainNode | null = null;
+
+let volume = clampVol(parseFloat(localStorage.getItem("sz-volume") ?? "0.8"));
+let muted = localStorage.getItem("sz-muted") === "1";
+
+function clampVol(v: number): number {
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.8;
+}
 
 function ac(): AudioContext {
   if (!ctx) {
@@ -13,6 +21,40 @@ function ac(): AudioContext {
     window.addEventListener("keydown", resume, { once: true });
   }
   return ctx;
+}
+
+/** Master bus: every SFX routes through this so volume/mute apply globally. */
+function master(): GainNode {
+  const a = ac();
+  if (!masterGain) {
+    masterGain = a.createGain();
+    masterGain.gain.value = muted ? 0 : volume;
+    masterGain.connect(a.destination);
+  }
+  return masterGain;
+}
+
+function applyGain() {
+  if (masterGain && ctx) {
+    masterGain.gain.setTargetAtTime(muted ? 0 : volume, ctx.currentTime, 0.02);
+  }
+}
+
+export function setVolume(v: number) {
+  volume = clampVol(v);
+  localStorage.setItem("sz-volume", String(volume));
+  applyGain();
+}
+export function getVolume(): number {
+  return volume;
+}
+export function setMuted(m: boolean) {
+  muted = m;
+  localStorage.setItem("sz-muted", m ? "1" : "0");
+  applyGain();
+}
+export function isMuted(): boolean {
+  return muted;
 }
 
 let noiseBuf: AudioBuffer | null = null;
@@ -49,7 +91,7 @@ function tone(
   osc.frequency.setValueAtTime(freq0, t);
   osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq1), t + dur);
   env(g, t, vol, dur);
-  osc.connect(g).connect(a.destination);
+  osc.connect(g).connect(master());
   osc.start(t);
   osc.stop(t + dur + 0.05);
 }
@@ -65,7 +107,7 @@ function thump(dur: number, vol: number, filterHz: number) {
   f.frequency.value = filterHz;
   const g = a.createGain();
   env(g, t, vol, dur);
-  src.connect(f).connect(g).connect(a.destination);
+  src.connect(f).connect(g).connect(master());
   src.start(t);
   src.stop(t + dur + 0.05);
 }

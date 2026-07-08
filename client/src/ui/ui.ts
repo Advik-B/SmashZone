@@ -1,5 +1,6 @@
 import type { Phase, PlayerMeta, Score } from "../net/messages";
 import { isTouchDevice, savedInputMode, type InputMode } from "../game/input";
+import type { Quality } from "../game/quality";
 import { SLOT_COLORS } from "../game/players";
 import {
   arrowCluster,
@@ -257,14 +258,84 @@ export class UI {
     cards[current === "keyboard" ? 1 : 0].focus();
   }
 
+  /**
+   * Full settings modal (opened by the menu gear): input scheme, audio
+   * volume/mute, and render quality. Live-applies each change; Esc closes.
+   */
+  showSettings(opts: {
+    onPickMode: (m: InputMode) => void;
+    volume: number;
+    muted: boolean;
+    onVolume: (v: number) => void;
+    onMuted: (m: boolean) => void;
+    quality: Quality;
+    onQuality: (q: Quality) => void;
+  }) {
+    const modal = document.createElement("div");
+    modal.className = "mode-modal";
+    modal.tabIndex = -1;
+    const qualities: Quality[] = ["low", "medium", "high"];
+    modal.innerHTML = `
+      <h2>SETTINGS</h2>
+      ${
+        isTouchDevice()
+          ? ""
+          : `<div class="settings-section"><div class="hint">controls</div>
+        <div class="mode-cards">${modeCard("pointer")}${modeCard("keyboard")}</div></div>`
+      }
+      <div class="settings-section"><div class="hint">audio</div>
+        <label class="settings-row"><span>volume</span>
+          <input id="set-vol" type="range" min="0" max="100" value="${Math.round(opts.volume * 100)}" /></label>
+        <label class="settings-row"><span>mute</span>
+          <input id="set-mute" type="checkbox" ${opts.muted ? "checked" : ""} /></label>
+      </div>
+      <div class="settings-section"><div class="hint">quality</div>
+        <div class="quality-cards">${qualities
+          .map(
+            (q) =>
+              `<button class="q-btn ${q === opts.quality ? "active" : ""}" data-q="${q}">${q}</button>`,
+          )
+          .join("")}</div>
+      </div>
+      <div class="hint">Esc to close</div>`;
+    this.root.appendChild(modal);
+    const close = () => modal.remove();
+
+    for (const card of modal.querySelectorAll<HTMLButtonElement>(".mode-card")) {
+      card.onclick = () => {
+        opts.onPickMode(card.dataset.mode as InputMode);
+        close();
+      };
+    }
+    const vol = modal.querySelector<HTMLInputElement>("#set-vol")!;
+    vol.oninput = () => opts.onVolume(Number(vol.value) / 100);
+    const mute = modal.querySelector<HTMLInputElement>("#set-mute")!;
+    mute.onchange = () => opts.onMuted(mute.checked);
+    for (const b of modal.querySelectorAll<HTMLButtonElement>(".q-btn")) {
+      b.onclick = () => {
+        opts.onQuality(b.dataset.q as Quality);
+        modal.querySelectorAll(".q-btn").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+      };
+    }
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+      }
+    });
+    modal.focus();
+  }
+
   showConnecting() {
     this.root.innerHTML = `<div class="menu"><h1>SMASHZONE</h1><div>connecting…</div></div>`;
   }
 
   buildHud(code: string) {
     this.root.innerHTML = `
-      <div class="hud-room">ROOM ${code} · <span id="h-ping"></span></div>
+      <div class="hud-room">ROOM ${esc(code)} · <span id="h-ping"></span></div>
       <div class="hud-scores" id="h-scores"></div>
+      <div class="hud-feed" id="h-feed"></div>
       <div class="hud-damage" id="h-damage"></div>
       <div class="hud-powerup" id="h-powerup"></div>
       <div class="hud-center" id="h-center"><div id="h-title"></div><div class="hud-sub" id="h-sub"></div></div>
@@ -291,6 +362,18 @@ export class UI {
   setPing(ms: number) {
     const el = document.getElementById("h-ping");
     if (el) el.textContent = `${Math.max(0, Math.round(ms))}ms`;
+  }
+
+  /** Append a kill-feed line (caller pre-escapes any names). Cap 4, TTL 4 s. */
+  addFeed(html: string) {
+    const el = document.getElementById("h-feed");
+    if (!el) return;
+    const line = document.createElement("div");
+    line.className = "feed-line";
+    line.innerHTML = html;
+    el.appendChild(line);
+    while (el.children.length > 4) el.removeChild(el.firstChild!);
+    setTimeout(() => line.remove(), 4000);
   }
 
   setDamage(dmg: number, alive: boolean) {

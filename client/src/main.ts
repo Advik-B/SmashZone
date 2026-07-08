@@ -11,6 +11,8 @@ import {
 import { loadCharacterModel } from "./game/players";
 import { Renderer } from "./game/renderer";
 import { TouchControls } from "./game/touch";
+import { getVolume, isMuted, setMuted, setVolume } from "./game/audio";
+import { savedQuality, saveQuality } from "./game/quality";
 import { UI } from "./ui/ui";
 
 async function createRoom(): Promise<string> {
@@ -32,6 +34,7 @@ async function main() {
 
   const canvas = document.getElementById("game") as HTMLCanvasElement;
   const renderer = new Renderer(canvas);
+  renderer.applyQuality(savedQuality());
   // Arena backdrop behind the menu.
   {
     const bg = new ClientSim(0);
@@ -89,10 +92,21 @@ async function main() {
       touch
         ? null
         : () =>
-            ui.showInputModePrompt(savedInputMode(), (m) => {
-              pickMode(m);
-              showMenu(); // refresh hints + mode label
-            }, () => {}),
+            ui.showSettings({
+              onPickMode: (m) => {
+                pickMode(m);
+                showMenu(); // refresh hints + mode label
+              },
+              volume: getVolume(),
+              muted: isMuted(),
+              onVolume: (v) => setVolume(v),
+              onMuted: (m) => setMuted(m),
+              quality: savedQuality(),
+              onQuality: (q) => {
+                saveQuality(q);
+                renderer.applyQuality(q);
+              },
+            }),
     );
   };
 
