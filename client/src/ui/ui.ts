@@ -173,7 +173,7 @@ export class UI {
         }
         <h1>SMASHZONE</h1>
         <div class="error">${esc(error)}</div>
-        <input id="m-name" maxlength="16" placeholder="your name" value="${saved}" />
+        <input id="m-name" maxlength="16" placeholder="your name" value="${esc(saved)}" />
         <button id="m-create">Create Party</button>
         <div class="row">
           <input id="m-code" maxlength="4" placeholder="CODE" />

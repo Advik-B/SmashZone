@@ -18,8 +18,19 @@ function clampVol(v: number): number {
 function ac(): AudioContext {
   if (!ctx) {
     ctx = new AudioContext();
+    // Resume on the first gesture and (re)sync music; once the context is
+    // actually running, drop the listeners so they don't fire on every input.
     const resume = () => {
-      ctx?.resume().then(syncMusic).catch(() => {});
+      ctx
+        ?.resume()
+        .then(() => {
+          syncMusic();
+          if (ctx?.state === "running") {
+            window.removeEventListener("pointerdown", resume);
+            window.removeEventListener("keydown", resume);
+          }
+        })
+        .catch(() => {});
     };
     window.addEventListener("pointerdown", resume);
     window.addEventListener("keydown", resume);

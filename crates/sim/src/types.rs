@@ -70,7 +70,9 @@ pub struct CharState {
     /// (cleared) by the world step every tick on both server and client.
     pub fire_intent: bool,
     /// Invulnerability ticks (spawn protection); no damage/knockback while > 0.
-    /// Appended for wire compat — never reorder CharState fields.
+    /// Added at the end (not reordered) so the CharSnapshot layout stays stable
+    /// for the lockstep client/server reconciliation in a single build —
+    /// postcard is positional, so this is not a cross-version wire guarantee.
     pub invuln: u16,
 }
 
