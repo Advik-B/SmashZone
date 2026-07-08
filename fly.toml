@@ -1,17 +1,11 @@
-# fly.toml app configuration file generated for smashzone on 2026-07-07T14:13:52Z
+# fly.toml app configuration file generated for smashzone-india on 2026-07-08T18:19:50Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'smashzone'
+app = 'smashzone-india'
 primary_region = 'ams'
-# Give the process time to notify rooms and flush the "restarting" notice
-# before Fly hard-kills it on deploy / auto-stop.
 kill_timeout = '5s'
-
-# NOTE: rooms live in per-machine memory with no shared registry, so this app
-# is correct only on a single machine. Keep max_machines effectively at 1
-# (scale up would route friends to different machines → "room not found").
 
 [build]
 
@@ -30,9 +24,8 @@ kill_timeout = '5s'
     method = 'GET'
     path = '/api/health'
 
-  [[vm]]
-  cpu_kind = "shared"
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
   cpus = 1
-  memory = "1gb"
   memory_mb = 256
-
