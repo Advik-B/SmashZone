@@ -271,6 +271,10 @@ export class UI {
     muted: boolean;
     onVolume: (v: number) => void;
     onMuted: (m: boolean) => void;
+    musicVolume: number;
+    musicMuted: boolean;
+    onMusicVolume: (v: number) => void;
+    onMusicMuted: (m: boolean) => void;
     quality: Quality;
     onQuality: (q: Quality) => void;
   }) {
@@ -287,10 +291,14 @@ export class UI {
         <div class="mode-cards">${modeCard("pointer")}${modeCard("keyboard")}</div></div>`
       }
       <div class="settings-section"><div class="hint">audio</div>
-        <label class="settings-row"><span>volume</span>
+        <label class="settings-row"><span>sfx volume</span>
           <input id="set-vol" type="range" min="0" max="100" value="${Math.round(opts.volume * 100)}" /></label>
-        <label class="settings-row"><span>mute</span>
+        <label class="settings-row"><span>sfx mute</span>
           <input id="set-mute" type="checkbox" ${opts.muted ? "checked" : ""} /></label>
+        <label class="settings-row"><span>music volume</span>
+          <input id="set-mvol" type="range" min="0" max="100" value="${Math.round(opts.musicVolume * 100)}" /></label>
+        <label class="settings-row"><span>music mute</span>
+          <input id="set-mmute" type="checkbox" ${opts.musicMuted ? "checked" : ""} /></label>
       </div>
       <div class="settings-section"><div class="hint">quality</div>
         <div class="quality-cards">${qualities
@@ -314,6 +322,10 @@ export class UI {
     vol.oninput = () => opts.onVolume(Number(vol.value) / 100);
     const mute = modal.querySelector<HTMLInputElement>("#set-mute")!;
     mute.onchange = () => opts.onMuted(mute.checked);
+    const mvol = modal.querySelector<HTMLInputElement>("#set-mvol")!;
+    mvol.oninput = () => opts.onMusicVolume(Number(mvol.value) / 100);
+    const mmute = modal.querySelector<HTMLInputElement>("#set-mmute")!;
+    mmute.onchange = () => opts.onMusicMuted(mmute.checked);
     for (const b of modal.querySelectorAll<HTMLButtonElement>(".q-btn")) {
       b.onclick = () => {
         opts.onQuality(b.dataset.q as Quality);

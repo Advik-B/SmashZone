@@ -366,11 +366,12 @@ export class Renderer {
     dtSec: number,
     powerupKind = 0,
     intangible = false,
+    grounded = true,
   ) {
     const v = this.players.get(id);
     if (!v) return;
     v.group.position.set(pos[0], pos[1], pos[2]);
-    v.update(anim, yaw, dtSec, powerupKind, intangible);
+    v.update(anim, yaw, dtSec, powerupKind, intangible, grounded);
     if (anim === ANIM.Dash) {
       this.effects.dashTrail(new THREE.Vector3(pos[0], pos[1], pos[2]), v.slotColor);
     }

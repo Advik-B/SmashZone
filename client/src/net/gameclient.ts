@@ -30,7 +30,7 @@ import {
   PU_GUN,
 } from "./messages";
 import * as THREE from "three";
-import { sfx } from "../game/audio";
+import { playMusic, sfx } from "../game/audio";
 import { ANIM_DANCE } from "../game/players";
 import type { Renderer } from "../game/renderer";
 import type { InputManager } from "../game/input";
@@ -47,6 +47,7 @@ interface RemoteSample {
   alive: boolean;
   powerup: number;
   intangible: boolean;
+  grounded: boolean;
 }
 
 interface ProjSample {
@@ -101,6 +102,7 @@ export class GameClient {
   private myPowerup = 0;
   private myPowerupTicks = 0;
   private myIntangible = false;
+  private myGrounded = true;
   private reconnecting = false;
   private disconnectedIds = new Set<number>();
   private spectateTarget: number | null = null;
@@ -266,6 +268,7 @@ export class GameClient {
         this.hostId = phase.host;
         this.localAlive = true;
         this.ui.setCenter("");
+        playMusic("menu");
         break;
       case "Countdown":
         // Server has reset the arena and respawned everyone.
@@ -273,6 +276,7 @@ export class GameClient {
         this.localAlive = true;
         this.aliveIds = new Set(this.metas.keys());
         this.spectateTarget = null;
+        playMusic("battle");
         break;
       case "Playing":
         this.roundStartTick = phase.roundStartTick;
@@ -294,6 +298,7 @@ export class GameClient {
       case "MatchEnd":
         this.ui.setCenter("");
         sfx.win();
+        playMusic("menu");
         break;
     }
     this.refreshOverlay();
@@ -326,6 +331,7 @@ export class GameClient {
         alive: ps.alive,
         powerup: ps.powerup,
         intangible: ps.intangible,
+        grounded: ps.grounded,
       });
       if (buf.length > 40) buf.shift();
       if (ps.disconnected) nextDisc.add(ps.id);
@@ -387,6 +393,7 @@ export class GameClient {
       this.myPowerupTicks = s.local.state.powerup_ticks ?? 0;
       this.myIntangible =
         (s.local.state.invuln ?? 0) > 0 || (s.local.state.dash_ticks ?? 0) > 0;
+      this.myGrounded = s.local.state.grounded ?? true;
       // Sync the prediction world's powerup so gun/bomb inputs predict as
       // fire (not melee) immediately after a pickup.
       this.sim.set_local_powerup(this.myPowerup, this.myPowerupTicks);
@@ -545,9 +552,10 @@ export class GameClient {
     if (pressed & BTN_LIGHT) {
       if (this.myPowerup === PU_GUN) sfx.shoot();
       else if (this.myPowerup === PU_BOMB) sfx.throwBomb();
+      else if (!this.myGrounded) sfx.swingAir();
       else sfx.swing();
     } else if (pressed & BTN_HEAVY) {
-      sfx.swing();
+      sfx.swingHeavy();
     }
     this.seq = (this.seq + 1) & 0xffff;
     this.conn.send(
@@ -591,6 +599,7 @@ export class GameClient {
           alive: b.alive,
           powerup: b.powerup,
           intangible: b.intangible,
+          grounded: b.grounded,
         };
       }
     }
@@ -690,6 +699,7 @@ export class GameClient {
           dtSec,
           this.myPowerup,
           this.myIntangible,
+          this.myGrounded,
         );
         focus = [px, py, pz];
       } else {
@@ -700,7 +710,16 @@ export class GameClient {
         if (this.phase.type === "MatchEnd" && id === this.phase.winner) {
           anim = ANIM_DANCE; // champion gets a dance
         }
-        this.renderer.setPlayerState(id, smp.pos, smp.yaw, anim, dtSec, smp.powerup, smp.intangible);
+        this.renderer.setPlayerState(
+          id,
+          smp.pos,
+          smp.yaw,
+          anim,
+          dtSec,
+          smp.powerup,
+          smp.intangible,
+          smp.grounded,
+        );
         if (id === this.myId) {
           focus = smp.alive ? smp.pos : [0, 1, 0];
         } else if (this.sim) {

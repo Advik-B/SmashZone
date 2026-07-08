@@ -11,7 +11,18 @@ import {
 import { loadCharacterModel } from "./game/players";
 import { Renderer } from "./game/renderer";
 import { TouchControls } from "./game/touch";
-import { getVolume, isMuted, setMuted, setVolume } from "./game/audio";
+import {
+  getMusicVolume,
+  getVolume,
+  isMuted,
+  isMusicMuted,
+  loadAudio,
+  playMusic,
+  setMuted,
+  setMusicMuted,
+  setMusicVolume,
+  setVolume,
+} from "./game/audio";
 import { savedQuality, saveQuality } from "./game/quality";
 import { UI } from "./ui/ui";
 
@@ -30,7 +41,7 @@ async function createRoom(): Promise<string> {
 }
 
 async function main() {
-  await Promise.all([init(), loadCharacterModel()]);
+  await Promise.all([init(), loadCharacterModel(), loadAudio()]);
 
   const canvas = document.getElementById("game") as HTMLCanvasElement;
   const renderer = new Renderer(canvas);
@@ -74,6 +85,7 @@ async function main() {
   const showMenu = (error = "") => {
     document.exitPointerLock?.();
     touch?.hide();
+    playMusic("menu");
     ui.showMenu(
       async (name) => {
         if (!(await ensureMode())) return;
@@ -101,6 +113,10 @@ async function main() {
               muted: isMuted(),
               onVolume: (v) => setVolume(v),
               onMuted: (m) => setMuted(m),
+              musicVolume: getMusicVolume(),
+              musicMuted: isMusicMuted(),
+              onMusicVolume: (v) => setMusicVolume(v),
+              onMusicMuted: (m) => setMusicMuted(m),
               quality: savedQuality(),
               onQuality: (q) => {
                 saveQuality(q);

@@ -244,7 +244,14 @@ export class PlayerVisual {
     this.current = action;
   }
 
-  update(anim: number, yaw: number, dtSec: number, powerupKind = 0, intangible = false) {
+  update(
+    anim: number,
+    yaw: number,
+    dtSec: number,
+    powerupKind = 0,
+    intangible = false,
+    grounded = true,
+  ) {
     this.setPowerup(powerupKind);
     if (anim !== this.lastAnim) {
       this.animTime = 0;
@@ -268,11 +275,36 @@ export class PlayerVisual {
     this.group.visible = anim !== ANIM.Dead || this.animTime < 1.2;
     this.group.rotation.y = yaw;
 
-    // Launched: tumble the whole rig.
+    // Attack accents layered on the shared "Punch" clip so light / heavy /
+    // air-light / slam read distinctly. Offsets are in rig-local space, so +z
+    // is "forward" (the group already carries the facing yaw).
+    const t = this.animTime;
+    let poseZ = 0;
+    let spinY = 0;
+    let pitchX = 0;
+    switch (anim) {
+      case ANIM.SwingLight:
+        if (grounded) poseZ = 0.25 * Math.exp(-t * 10); // quick forward jab
+        else spinY = Math.min(t * 40, Math.PI * 2); // air-light: 360° spin
+        break;
+      case ANIM.WindupHeavy:
+        poseZ = -0.18 * Math.min(1, t * 6); // wind up (pull back)
+        break;
+      case ANIM.SwingHeavy:
+        poseZ = 0.4 * Math.exp(-t * 7); // heavy lunge forward
+        break;
+      case ANIM.Slam:
+        pitchX = 0.5; // dive-bomb tuck
+        break;
+    }
+    this.rig.position.z = poseZ;
+    this.rig.rotation.y = spinY;
+
+    // Launched: tumble the whole rig (overrides the attack pitch).
     if (anim === ANIM.Launched) {
       this.rig.rotation.x = this.animTime * 7;
     } else {
-      this.rig.rotation.x = 0;
+      this.rig.rotation.x = pitchX;
     }
 
     this.mixer?.update(dtSec);
