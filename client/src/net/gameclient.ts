@@ -73,6 +73,40 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + d * t;
 }
 
+function pick<T>(arr: readonly T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// Round-end banners. "{name}" is filled with the winner. One is picked at
+// random each round for variety; the "me" set fires when the local player wins.
+const ROUND_WIN_LINES = [
+  "{name} takes the round!",
+  "{name} wins the round!",
+  "{name} stands alone!",
+  "{name} cleaned house!",
+  "{name} rules the arena!",
+  "Round goes to {name}!",
+  "{name} sweeps the round!",
+  "Last bot standing: {name}!",
+] as const;
+
+const ROUND_WIN_LINES_ME = [
+  "You take the round!",
+  "Last bot standing — that's you!",
+  "You smashed 'em all!",
+  "Domination! The round is yours!",
+  "Winner! You cleaned house!",
+  "Nobody left but you!",
+] as const;
+
+const ROUND_DRAW_LINES = [
+  "Nobody survives!",
+  "No survivors!",
+  "Everybody wiped out!",
+  "Mutual destruction!",
+  "Total wipeout — it's a wash!",
+] as const;
+
 export class GameClient {
   private conn: Connection;
   private sim: ClientSim | null = null;
@@ -293,13 +327,11 @@ export class GameClient {
         }, 900);
         break;
       case "RoundEnd": {
-        const name =
-          phase.winner !== null
-            ? this.metas.get(phase.winner)?.name ?? "???"
-            : null;
-        this.ui.setCenter(
-          name ? `${name} takes the round!` : "Nobody survives!",
-        );
+        // Only roll a fresh banner on the real transition, so a duplicate
+        // RoundEnd message doesn't swap the text (and re-pop) mid-round.
+        if (prev.type !== "RoundEnd") {
+          this.ui.setCenter(this.roundEndBanner(phase.winner));
+        }
         break;
       }
       case "MatchEnd":
@@ -618,6 +650,14 @@ export class GameClient {
     this.combo = 0;
     this.comboExpiresAt = 0;
     this.ui.setCombo(0);
+  }
+
+  /** Pick a random round-end banner for the given winner (null = draw). */
+  private roundEndBanner(winner: number | null): string {
+    if (winner === null) return pick(ROUND_DRAW_LINES);
+    if (winner === this.myId) return pick(ROUND_WIN_LINES_ME);
+    const name = this.metas.get(winner)?.name ?? "???";
+    return pick(ROUND_WIN_LINES).replace("{name}", name);
   }
 
   private estServerTick(now: number): number {
