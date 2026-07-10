@@ -11,6 +11,10 @@ export const SLOT_COLORS = [
 /** Client-only pseudo anim state: winner dance at match end. */
 export const ANIM_DANCE = 100;
 
+function isAirborne(anim: number): boolean {
+  return anim === ANIM.Air || anim === ANIM.Launched || anim === ANIM.Slam;
+}
+
 interface Template {
   scene: THREE.Group;
   clips: THREE.AnimationClip[];
@@ -90,6 +94,9 @@ export class PlayerVisual {
   private lastAnim = -1;
   private animTime = 0;
   private flashTime = 0;
+  private squash = 0; // >0 landing squash, <0 takeoff stretch; decays to 0
+  /** Set on an airborne→grounded transition; consumed by the renderer. */
+  landed = false;
   private aura: THREE.Mesh;
   private auraMat: THREE.MeshBasicMaterial;
   private curPowerup = 0;
@@ -254,11 +261,34 @@ export class PlayerVisual {
   ) {
     this.setPowerup(powerupKind);
     if (anim !== this.lastAnim) {
+      // Squash on landing, stretch on takeoff (visual only — rig scale, not
+      // the collision capsule). Detected via anim transitions because the
+      // grounded flag is snapshot-delayed for the local player.
+      const wasAir = isAirborne(this.lastAnim);
+      if (wasAir && !isAirborne(anim) && anim !== ANIM.Dead) {
+        this.squash = 1;
+        this.landed = true;
+      } else if (!wasAir && anim === ANIM.Air) {
+        this.squash = -0.6;
+      }
       this.animTime = 0;
       this.lastAnim = anim;
       this.play(planFor(anim));
     }
     this.animTime += dtSec;
+
+    if (this.squash !== 0) {
+      this.squash *= Math.exp(-10 * dtSec);
+      if (Math.abs(this.squash) < 0.01) this.squash = 0;
+      const k = this.squash;
+      this.rig.scale.set(1 + 0.18 * k, 1 - 0.22 * k, 1 + 0.18 * k);
+      // Scale is centered on the capsule middle (feet at local y=-1), so
+      // shift the rig to keep the feet planted while squashing/stretching.
+      this.rig.position.y = -0.22 * k;
+    } else if (this.rig.scale.y !== 1) {
+      this.rig.scale.set(1, 1, 1);
+      this.rig.position.y = 0;
+    }
 
     // Intangibility blink (spawn protection / dash i-frames).
     this.rig.visible = !intangible || anim === ANIM.Dead

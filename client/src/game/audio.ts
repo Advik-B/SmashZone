@@ -3,6 +3,8 @@
 // AudioContext, resumed on the first user gesture. Everything routes through a
 // master gain (volume/mute); music has its own sub-gain (independent slider).
 
+import { pitchVar } from "./juice";
+
 let ctx: AudioContext | null = null;
 let masterGain: GainNode | null = null;
 
@@ -111,12 +113,13 @@ export async function loadAudio(): Promise<void> {
 }
 
 /** Play a loaded one-shot sample. Returns false if it isn't available. */
-function play(name: string, gain = 1): boolean {
+function play(name: string, gain = 1, rate = 1): boolean {
   const buf = buffers.get(name);
   const a = ctx;
   if (!buf || !a || a.state !== "running") return false;
   const src = a.createBufferSource();
   src.buffer = buf;
+  src.playbackRate.value = rate;
   const g = a.createGain();
   g.gain.value = gain;
   src.connect(g).connect(master());
@@ -254,38 +257,63 @@ function thump(dur: number, vol: number, filterHz: number) {
 }
 
 // ---- SFX API (sampled where available, else procedural) -------------------
+// Repeated one-shots get a small random pitch variance (and hits accept a
+// combo pitch multiplier) so back-to-back plays don't machine-gun.
 
 export const sfx = {
   // Swings stay procedural (no clean CC0 whoosh); pitched per attack type.
-  swing: () => tone(700, 200, 0.09, "sawtooth", 0.05),
-  swingHeavy: () => tone(460, 130, 0.14, "sawtooth", 0.06),
-  swingAir: () => tone(900, 320, 0.11, "sawtooth", 0.05),
-  hitLight: () => {
-    if (play("hit_light")) return;
-    thump(0.12, 0.4, 1800);
-    tone(300, 90, 0.12, "square", 0.12);
+  swing: () => {
+    const r = pitchVar();
+    tone(700 * r, 200 * r, 0.09, "sawtooth", 0.05);
   },
-  hitHeavy: () => {
-    if (play("hit_heavy")) return;
+  swingHeavy: () => {
+    const r = pitchVar();
+    tone(460 * r, 130 * r, 0.14, "sawtooth", 0.06);
+  },
+  swingAir: () => {
+    const r = pitchVar();
+    tone(900 * r, 320 * r, 0.11, "sawtooth", 0.05);
+  },
+  hitLight: (pitch = 1) => {
+    const r = pitch * pitchVar();
+    if (play("hit_light", 1, r)) return;
+    thump(0.12, 0.4, 1800 * r);
+    tone(300 * r, 90 * r, 0.12, "square", 0.12);
+  },
+  hitHeavy: (pitch = 1) => {
+    const r = pitch * pitchVar();
+    if (play("hit_heavy", 1, r)) {
+      thump(0.18, 0.25, 320); // sub-bass crunch the sample lacks
+      return;
+    }
     thump(0.22, 0.55, 1200);
-    tone(200, 50, 0.25, "square", 0.18);
+    tone(200 * r, 50 * r, 0.25, "square", 0.18);
   },
   jump: () => {
-    if (play("jump", 0.6)) return;
-    tone(250, 520, 0.14, "triangle", 0.1);
+    const r = pitchVar();
+    if (play("jump", 0.6, r)) return;
+    tone(250 * r, 520 * r, 0.14, "triangle", 0.1);
   },
   dash: () => {
-    if (play("dash", 0.6)) return;
-    tone(900, 1400, 0.12, "sawtooth", 0.06);
+    const r = pitchVar();
+    if (play("dash", 0.6, r)) return;
+    tone(900 * r, 1400 * r, 0.12, "sawtooth", 0.06);
   },
   slam: () => {
-    if (play("slam")) return;
+    const r = pitchVar(0.04);
+    if (play("slam", 1, r)) return;
     thump(0.35, 0.6, 500);
     tone(140, 40, 0.35, "sine", 0.25);
   },
   death: () => {
-    if (play("death")) return;
-    tone(600, 60, 0.6, "sawtooth", 0.15);
+    const r = pitchVar(0.04);
+    if (play("death", 1, r)) {
+      // Layer weight under the sample: sub-bass hit + falling whine.
+      thump(0.4, 0.35, 300);
+      tone(220, 40, 0.5, "sine", 0.1);
+      return;
+    }
+    tone(600 * r, 60, 0.6, "sawtooth", 0.15);
   },
   tileFall: () => thump(0.3, 0.18, 700),
   count: () => tone(440, 440, 0.1, "square", 0.1),
@@ -305,13 +333,15 @@ export const sfx = {
     tone(880, 1320, 0.25, "sine", 0.09);
   },
   pickup: () => {
-    if (play("pickup")) return;
+    const r = pitchVar(0.04);
+    if (play("pickup", 1, r)) return;
     tone(523, 1047, 0.16, "triangle", 0.14);
     setTimeout(() => tone(1047, 1568, 0.2, "triangle", 0.1), 90);
   },
   shoot: () => {
-    if (play("shoot", 0.6)) return;
-    tone(1200, 280, 0.09, "sawtooth", 0.12);
+    const r = pitchVar();
+    if (play("shoot", 0.6, r)) return;
+    tone(1200 * r, 280 * r, 0.09, "sawtooth", 0.12);
     thump(0.05, 0.18, 3200);
   },
   throwBomb: () => {

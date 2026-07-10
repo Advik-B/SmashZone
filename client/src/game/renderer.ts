@@ -6,6 +6,7 @@ import constants from "../../../shared/constants.json";
 import { ANIM, PU_BOMB, POWERUP_COLORS } from "../net/messages";
 import { Effects } from "./effects";
 import { Floaters } from "./floaters";
+import { JUICE } from "./juice";
 import { PlayerVisual } from "./players";
 import { QUALITY_PRESETS, type Quality } from "./quality";
 
@@ -91,6 +92,7 @@ export class Renderer {
   effects: Effects;
   private floaters: Floaters;
   private shakeAmp = 0;
+  private fovKick = 0;
   private camPos = new THREE.Vector3(0, 8, -14);
   private followPos = new THREE.Vector3();
   private time = 0;
@@ -110,7 +112,7 @@ export class Renderer {
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 300);
+    this.camera = new THREE.PerspectiveCamera(JUICE.fov.base, 1, 0.1, 300);
     this.resize();
 
     this.scene.background = new THREE.Color(0x11162e);
@@ -190,9 +192,19 @@ export class Renderer {
     this.resize();
   }
 
-  /** Floating damage number at a world position. */
+  /** Floating damage number at a world position; grows with the hit. */
   spawnDamage(pos: [number, number, number], dmg: number, heavy: boolean) {
-    this.floaters.spawn(pos, `${dmg}`, heavy);
+    const scale = Math.min(
+      JUICE.floater.scaleMax,
+      JUICE.floater.scaleBase + dmg * JUICE.floater.scalePerDamage,
+    );
+    const color = dmg >= JUICE.floater.bigDamage ? JUICE.floater.bigColor : undefined;
+    this.floaters.spawn(pos, `${dmg}`, { heavy, scale, color });
+  }
+
+  /** Floating combat text (e.g. "KO!") at a world position. */
+  spawnText(pos: [number, number, number], text: string, scale: number, color: string) {
+    this.floaters.spawn(pos, text, { scale, color, life: JUICE.floater.koLife });
   }
 
   /** Update a player's nameplate damage readout. */
@@ -374,6 +386,12 @@ export class Renderer {
     v.update(anim, yaw, dtSec, powerupKind, intangible, grounded);
     if (anim === ANIM.Dash) {
       this.effects.dashTrail(new THREE.Vector3(pos[0], pos[1], pos[2]), v.slotColor);
+    } else if (anim === ANIM.Launched) {
+      this.effects.launchTrail(new THREE.Vector3(pos[0], pos[1], pos[2]));
+    }
+    if (v.landed) {
+      v.landed = false;
+      this.effects.landDust(new THREE.Vector3(pos[0], pos[1], pos[2]));
     }
   }
 
@@ -383,6 +401,11 @@ export class Renderer {
 
   shake(strength: number) {
     this.shakeAmp = Math.min(0.6, this.shakeAmp + strength);
+  }
+
+  /** Additive FOV punch: negative zooms in (impact), positive widens (blast). */
+  kickFov(amount: number) {
+    this.fovKick = Math.max(-JUICE.fov.max, Math.min(JUICE.fov.max, this.fovKick + amount));
   }
 
   render(dtSec: number, focus: [number, number, number], camYaw: number, camPitch: number) {
@@ -434,6 +457,17 @@ export class Renderer {
       (Math.random() - 0.5) * this.shakeAmp,
       (Math.random() - 0.5) * this.shakeAmp,
     );
+
+    // FOV punch: decay toward rest, only touching the projection while live.
+    if (this.fovKick !== 0) {
+      const decay = Math.exp(-JUICE.fov.decayPerSec * dtSec);
+      this.fovKick = Math.abs(this.fovKick) < 0.02 ? 0 : this.fovKick * decay;
+      const fov = JUICE.fov.base + this.fovKick;
+      if (Math.abs(this.camera.fov - fov) > 0.01) {
+        this.camera.fov = fov;
+        this.camera.updateProjectionMatrix();
+      }
+    }
 
     this.camera.position.copy(this.camPos).add(shake);
     this.camera.lookAt(

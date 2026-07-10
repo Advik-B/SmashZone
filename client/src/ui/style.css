@@ -38,7 +38,9 @@ body {
 #ui > .hud-scores,
 #ui > .hud-damage,
 #ui > .hud-powerup,
+#ui > .hud-combo,
 #ui > .hud-center,
+#ui > #h-flash,
 #ui > .controls-hint {
   pointer-events: none;
 }
@@ -172,6 +174,84 @@ body {
   text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
 }
 
+.hud-combo {
+  position: absolute;
+  bottom: 140px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #ffd76e;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+}
+
+.combo-pop {
+  animation: combo-pop 0.16s cubic-bezier(0.2, 2, 0.4, 1);
+}
+
+@keyframes combo-pop {
+  from {
+    transform: translateX(-50%) scale(1.6);
+  }
+  to {
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+/* Full-screen KO flash: invisible until .flash-out replays. */
+#h-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+}
+
+.flash-out {
+  animation: flash-out 0.18s ease-out;
+}
+
+@keyframes flash-out {
+  from {
+    opacity: var(--flash, 0.4);
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.dmg-pop {
+  animation: dmg-pop 0.14s ease-out;
+}
+
+@keyframes dmg-pop {
+  from {
+    transform: translateX(-50%) scale(1.35);
+  }
+  to {
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+.center-pop {
+  animation: center-pop 0.22s ease-out;
+}
+
+@keyframes center-pop {
+  from {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(0.94);
+    opacity: 1;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 .hud-room {
   position: absolute;
   top: 14px;
@@ -249,6 +329,12 @@ body {
   animation: feed-in 0.18s ease-out;
 }
 
+.feed-streak {
+  color: #ffd76e;
+  font-weight: 800;
+  margin-left: 4px;
+}
+
 @keyframes feed-in {
   from {
     opacity: 0;
@@ -301,6 +387,22 @@ body {
   width: 12px;
   height: 12px;
   border-radius: 50%;
+}
+
+/* One-shot bump when a row's win count goes up (round win). */
+.hud-scores .row.bump {
+  animation: score-bump 0.6s ease-out;
+}
+
+@keyframes score-bump {
+  0% {
+    transform: scale(1.15);
+    box-shadow: 0 0 16px rgba(255, 215, 110, 0.9);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: none;
+  }
 }
 
 .hud-scores .dead {
@@ -698,6 +800,11 @@ body {
   .hud-powerup {
     font-size: 17px;
     bottom: 64px;
+  }
+
+  .hud-combo {
+    font-size: 20px;
+    bottom: 100px;
   }
 
   .hud-center {
