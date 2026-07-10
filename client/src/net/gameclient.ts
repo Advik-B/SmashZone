@@ -31,10 +31,11 @@ import {
 } from "./messages";
 import * as THREE from "three";
 import { playMusic, sfx } from "../game/audio";
+import { haptic, JUICE } from "../game/juice";
 import { ANIM_DANCE } from "../game/players";
 import type { Renderer } from "../game/renderer";
 import type { InputManager } from "../game/input";
-import { esc, type PhaseCtx, type UI } from "../ui/ui";
+import { colorOf, esc, type PhaseCtx, type UI } from "../ui/ui";
 
 const TICK_MS = 1000 / constants.tickRate;
 const INTERP_TICKS = (constants.interpDelayMs / 1000) * constants.tickRate;
@@ -71,6 +72,40 @@ function lerpAngle(a: number, b: number, t: number): number {
   if (d < -Math.PI) d += Math.PI * 2;
   return a + d * t;
 }
+
+function pick<T>(arr: readonly T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// Round-end banners. "{name}" is filled with the winner. One is picked at
+// random each round for variety; the "me" set fires when the local player wins.
+const ROUND_WIN_LINES = [
+  "{name} takes the round!",
+  "{name} wins the round!",
+  "{name} stands alone!",
+  "{name} cleaned house!",
+  "{name} rules the arena!",
+  "Round goes to {name}!",
+  "{name} sweeps the round!",
+  "Last bot standing: {name}!",
+] as const;
+
+const ROUND_WIN_LINES_ME = [
+  "You take the round!",
+  "Last bot standing — that's you!",
+  "You smashed 'em all!",
+  "Domination! The round is yours!",
+  "Winner! You cleaned house!",
+  "Nobody left but you!",
+] as const;
+
+const ROUND_DRAW_LINES = [
+  "Nobody survives!",
+  "No survivors!",
+  "Everybody wiped out!",
+  "Mutual destruction!",
+  "Total wipeout — it's a wash!",
+] as const;
 
 export class GameClient {
   private conn: Connection;
@@ -110,6 +145,10 @@ export class GameClient {
   private hitstopMs = 0;
   private lastFocus: Vec3 = [0, 1, 0];
   private lastHitBy = new Map<number, { attacker: number; t: number }>();
+  // Display-only dopamine state: my consecutive-hit combo + per-player KO streaks.
+  private combo = 0;
+  private comboExpiresAt = 0;
+  private streaks = new Map<number, number>();
   destroyed = false;
 
   constructor(
@@ -276,6 +315,8 @@ export class GameClient {
         this.localAlive = true;
         this.aliveIds = new Set(this.metas.keys());
         this.spectateTarget = null;
+        this.resetCombo();
+        this.streaks.clear();
         playMusic("battle");
         break;
       case "Playing":
@@ -286,18 +327,17 @@ export class GameClient {
         }, 900);
         break;
       case "RoundEnd": {
-        const name =
-          phase.winner !== null
-            ? this.metas.get(phase.winner)?.name ?? "???"
-            : null;
-        this.ui.setCenter(
-          name ? `${name} takes the round!` : "Nobody survives!",
-        );
+        // Only roll a fresh banner on the real transition, so a duplicate
+        // RoundEnd message doesn't swap the text (and re-pop) mid-round.
+        if (prev.type !== "RoundEnd") {
+          this.ui.setCenter(this.roundEndBanner(phase.winner));
+        }
         break;
       }
       case "MatchEnd":
         this.ui.setCenter("");
         sfx.win();
+        if (phase.winner === this.myId) haptic(JUICE.haptics.win);
         playMusic("menu");
         break;
     }
@@ -455,17 +495,55 @@ export class GameClient {
         this.renderer.flashPlayer(ev.target);
         const p = this.renderer.playerPos(ev.target);
         if (p) {
-          this.renderer.effects.hitBurst(p, ev.heavy);
+          this.renderer.effects.impactBurst(p, ev.dir, ev.heavy, ev.damage);
+          this.renderer.effects.spawnFlash(
+            new THREE.Vector3(p.x, p.y + 0.6, p.z),
+            ev.heavy ? 1.5 : 0.9 + ev.damage * 0.01,
+          );
           this.renderer.spawnDamage([p.x, p.y, p.z], ev.damage, ev.heavy);
         }
-        if (ev.heavy) sfx.hitHeavy();
-        else sfx.hitLight();
-        if (ev.target === this.myId) this.renderer.shake(ev.heavy ? 0.45 : 0.25);
-        else if (ev.attacker === this.myId) this.renderer.shake(0.12);
+        // Combo (display-only): consecutive hits I land inside the window.
+        // Getting hit breaks it. Rising pitch per hit in the chain.
+        const now = performance.now();
+        let pitch = 1;
+        if (ev.attacker === this.myId && ev.target !== this.myId) {
+          this.combo = now < this.comboExpiresAt ? this.combo + 1 : 1;
+          this.comboExpiresAt = now + JUICE.combo.windowMs;
+          this.ui.setCombo(this.combo);
+          pitch =
+            1 +
+            Math.min(this.combo - 1, JUICE.combo.pitchMaxSteps) * JUICE.combo.pitchStep;
+        } else if (ev.target === this.myId) {
+          this.resetCombo();
+        }
+        if (ev.heavy) sfx.hitHeavy(pitch);
+        else sfx.hitLight(pitch);
+        // Feedback scales with the hit, gated on local involvement.
+        if (ev.target === this.myId) {
+          this.renderer.shake(
+            Math.min(
+              JUICE.shake.takenMax,
+              (ev.heavy ? JUICE.shake.takenHeavy : JUICE.shake.takenLight) +
+                ev.damage * JUICE.shake.takenPerDamage,
+            ),
+          );
+          if (ev.heavy) this.renderer.kickFov(JUICE.fov.takenHeavy);
+          haptic(ev.heavy ? JUICE.haptics.hitHeavy : JUICE.haptics.hitLight);
+        } else if (ev.attacker === this.myId) {
+          this.renderer.shake(JUICE.shake.dealtBase + ev.damage * JUICE.shake.dealtPerDamage);
+          if (ev.heavy) this.renderer.kickFov(JUICE.fov.dealtHeavy);
+          haptic(JUICE.haptics.dealt);
+        }
         // Kill-feed credit (valid 5 s) + local hitstop (extend-only).
-        this.lastHitBy.set(ev.target, { attacker: ev.attacker, t: performance.now() });
+        this.lastHitBy.set(ev.target, { attacker: ev.attacker, t: now });
         if (ev.target === this.myId || ev.attacker === this.myId) {
-          this.hitstopMs = Math.max(this.hitstopMs, ev.heavy ? 70 : 45);
+          const stop = ev.heavy
+            ? Math.min(
+                JUICE.hitstop.maxMs,
+                JUICE.hitstop.heavyBaseMs + ev.damage * JUICE.hitstop.heavyPerDamage,
+              )
+            : JUICE.hitstop.lightMs;
+          this.hitstopMs = Math.max(this.hitstopMs, stop);
         }
         break;
       }
@@ -473,26 +551,60 @@ export class GameClient {
         const p = this.renderer.playerPos(ev.player);
         if (p) this.renderer.effects.slamRing(p);
         sfx.slam();
-        this.renderer.shake(0.2);
+        this.renderer.shake(JUICE.shake.slam);
         break;
       }
       case "Death": {
         const p = this.renderer.playerPos(ev.player);
         if (p && p.y > -30) {
-          this.renderer.effects.deathBurst(p, this.renderer.playerColor(ev.player));
+          this.renderer.effects.deathBurst(p, this.renderer.playerColor(ev.player), ev.vel);
         }
+        // "KO!" where they went out (wire pos; clamped up so it stays in view).
+        this.renderer.spawnText(
+          [ev.pos[0], Math.max(ev.pos[1], -6), ev.pos[2]],
+          "KO!",
+          JUICE.floater.koScale,
+          JUICE.floater.koColor,
+        );
         sfx.death();
-        if (ev.player === this.myId) this.renderer.shake(0.4);
         // Kill feed: credit the last attacker within 5 s, else a solo fall.
         const victim = esc(this.metas.get(ev.player)?.name ?? "?");
         const credit = this.lastHitBy.get(ev.player);
-        if (credit && performance.now() - credit.t < 5000 && credit.attacker !== ev.player) {
-          const killer = esc(this.metas.get(credit.attacker)?.name ?? "?");
-          this.ui.addFeed(`${killer} knocked out ${victim}`);
+        const killer =
+          credit && performance.now() - credit.t < 5000 && credit.attacker !== ev.player
+            ? credit.attacker
+            : null;
+        if (killer !== null) {
+          const meta = this.metas.get(killer);
+          const streak = (this.streaks.get(killer) ?? 0) + 1;
+          this.streaks.set(killer, streak);
+          const name = `<b style="color:${colorOf(meta?.slot ?? 0)}">${esc(meta?.name ?? "?")}</b>`;
+          const spice =
+            streak === 2
+              ? ` <span class="feed-streak">double KO!</span>`
+              : streak >= 3
+                ? ` <span class="feed-streak">${streak} KO streak!</span>`
+                : "";
+          this.ui.addFeed(`${name} knocked out ${victim}${spice}`);
         } else {
           this.ui.addFeed(`${victim} fell`);
         }
+        this.streaks.delete(ev.player); // dying ends the victim's streak
         this.lastHitBy.delete(ev.player);
+        // KO spectacle: flash for everyone, freeze/kick only when I'm involved.
+        const involved = ev.player === this.myId || killer === this.myId;
+        this.ui.flash(involved ? 0.5 : 0.3);
+        if (involved) {
+          this.hitstopMs = Math.max(this.hitstopMs, JUICE.hitstop.koMs);
+          this.renderer.kickFov(JUICE.fov.ko);
+          this.renderer.shake(JUICE.shake.ko);
+        }
+        if (ev.player === this.myId) {
+          this.resetCombo();
+          haptic(JUICE.haptics.death);
+        } else if (killer === this.myId) {
+          haptic(JUICE.haptics.kill);
+        }
         break;
       }
       case "PickupSpawn": {
@@ -520,7 +632,9 @@ export class GameClient {
         if (ev.kind === PU_BOMB) {
           this.renderer.effects.hitBurst(v, true);
           this.renderer.effects.slamRing(v);
-          this.renderer.shake(0.3);
+          this.renderer.effects.spawnFlash(v, 2.2, 0xffb347);
+          this.renderer.shake(JUICE.shake.explosion);
+          this.renderer.kickFov(JUICE.fov.explosion);
           sfx.explosion();
         } else {
           this.renderer.effects.hitBurst(v, false);
@@ -530,6 +644,20 @@ export class GameClient {
       default:
         break; // tile events handled via local sim
     }
+  }
+
+  private resetCombo() {
+    this.combo = 0;
+    this.comboExpiresAt = 0;
+    this.ui.setCombo(0);
+  }
+
+  /** Pick a random round-end banner for the given winner (null = draw). */
+  private roundEndBanner(winner: number | null): string {
+    if (winner === null) return pick(ROUND_DRAW_LINES);
+    if (winner === this.myId) return pick(ROUND_WIN_LINES_ME);
+    const name = this.metas.get(winner)?.name ?? "???";
+    return pick(ROUND_WIN_LINES).replace("{name}", name);
   }
 
   private estServerTick(now: number): number {
@@ -548,7 +676,10 @@ export class GameClient {
     const pressed = inp.buttons & ~this.prevButtons;
     this.prevButtons = inp.buttons;
     if (pressed & BTN_JUMP) sfx.jump();
-    if (pressed & BTN_DASH) sfx.dash();
+    if (pressed & BTN_DASH) {
+      sfx.dash();
+      this.renderer.kickFov(JUICE.fov.dash); // anticipation zoom-in
+    }
     if (pressed & BTN_LIGHT) {
       if (this.myPowerup === PU_GUN) sfx.shoot();
       else if (this.myPowerup === PU_BOMB) sfx.throwBomb();
@@ -771,6 +902,7 @@ export class GameClient {
     this.renderer.updateProjectiles(projList);
 
     this.renderer.updateTiles(this.sim.tile_states());
+    if (this.combo > 0 && now >= this.comboExpiresAt) this.resetCombo();
     this.ui.setDamage(this.myDamage, this.localAlive);
     this.ui.setPowerup(
       this.localAlive ? POWERUP_NAMES[this.myPowerup] ?? "" : "",

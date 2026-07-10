@@ -13,8 +13,15 @@ import {
   wasdCluster,
 } from "./icons";
 
-function colorOf(slot: number): string {
+export function colorOf(slot: number): string {
   return "#" + SLOT_COLORS[slot % SLOT_COLORS.length].toString(16).padStart(6, "0");
+}
+
+/** Restart a CSS keyframe animation class on an element. */
+function retrigger(el: HTMLElement, cls: string) {
+  el.classList.remove(cls);
+  void el.offsetWidth; // force reflow so the animation replays
+  el.classList.add(cls);
 }
 
 /**
@@ -137,6 +144,11 @@ export class UI {
   private hudSub: HTMLElement | null = null;
   private hudScores: HTMLElement | null = null;
   private overlay: HTMLElement | null = null;
+  private hudCombo: HTMLElement | null = null;
+  private hudFlash: HTMLElement | null = null;
+  private lastCenter = "";
+  private lastDmg = -1;
+  private lastWins = new Map<number, number>();
 
   constructor() {
     // Enter presses START MATCH / REMATCH so a keyboard-only host never needs
@@ -348,11 +360,13 @@ export class UI {
 
   buildHud(code: string) {
     this.root.innerHTML = `
+      <div id="h-flash"></div>
       <div class="hud-room">ROOM ${esc(code)} · <span id="h-ping"></span></div>
       <div class="hud-scores" id="h-scores"></div>
       <div class="hud-feed" id="h-feed"></div>
       <div class="hud-damage" id="h-damage"></div>
       <div class="hud-powerup" id="h-powerup"></div>
+      <div class="hud-combo" id="h-combo"></div>
       <div class="hud-center" id="h-center"><div id="h-title"></div><div class="hud-sub" id="h-sub"></div></div>
       <div id="h-overlay"></div>
       ${isTouchDevice() ? "" : `<div class="controls-hint">${hudControlsHint()}</div>`}`;
@@ -361,6 +375,29 @@ export class UI {
     this.hudSub = document.getElementById("h-sub");
     this.hudScores = document.getElementById("h-scores");
     this.overlay = document.getElementById("h-overlay");
+    this.hudCombo = document.getElementById("h-combo");
+    this.hudFlash = document.getElementById("h-flash");
+    this.lastCenter = "";
+    this.lastDmg = -1;
+    this.lastWins.clear();
+  }
+
+  /** Combo readout ("N HITS"); hidden below 2 hits. Display-only. */
+  setCombo(n: number) {
+    if (!this.hudCombo) return;
+    if (n < 2) {
+      this.hudCombo.textContent = "";
+      return;
+    }
+    this.hudCombo.textContent = `${n} HITS`;
+    retrigger(this.hudCombo, "combo-pop");
+  }
+
+  /** Full-screen white flash (KO punctuation). */
+  flash(strength = 0.4) {
+    if (!this.hudFlash) return;
+    this.hudFlash.style.setProperty("--flash", String(strength));
+    retrigger(this.hudFlash, "flash-out");
   }
 
   setPowerup(name: string, secs: number, colorHex: string) {
@@ -398,10 +435,21 @@ export class UI {
     this.hudDamage.style.color = `rgb(255, ${Math.round(255 - heat * 190)}, ${Math.round(
       255 - heat * 230,
     )})`;
+    // Pop on increase only (this runs every frame).
+    if (alive && this.lastDmg >= 0 && dmg > this.lastDmg) {
+      retrigger(this.hudDamage, "dmg-pop");
+    }
+    this.lastDmg = alive ? dmg : -1;
   }
 
   setCenter(title: string, sub = "") {
-    if (this.hudCenter) this.hudCenter.textContent = title;
+    // Slam-in only when the text actually changes — this is called every
+    // frame during countdown with the same string.
+    if (this.hudCenter && title !== this.lastCenter) {
+      this.lastCenter = title;
+      this.hudCenter.textContent = title;
+      if (title) retrigger(this.hudCenter, "center-pop");
+    }
     if (this.hudSub) this.hudSub.textContent = sub;
   }
 
@@ -417,9 +465,13 @@ export class UI {
       .map((m) => {
         const dead = aliveIds && !aliveIds.has(m.id);
         const gone = disconnectedIds?.has(m.id);
-        return `<div class="row ${dead ? "dead" : ""} ${gone ? "disconnected" : ""}">
+        const w = wins.get(m.id) ?? 0;
+        // Bump the row once when its win count goes up (round win).
+        const bump = w > (this.lastWins.get(m.id) ?? 0);
+        this.lastWins.set(m.id, w);
+        return `<div class="row ${dead ? "dead" : ""} ${gone ? "disconnected" : ""} ${bump ? "bump" : ""}">
           <div class="dot" style="background:${colorOf(m.slot)}"></div>
-          <span>${esc(m.name)}${gone ? " ⟳" : ""}</span><b>${wins.get(m.id) ?? 0}</b>
+          <span>${esc(m.name)}${gone ? " ⟳" : ""}</span><b>${w}</b>
         </div>`;
       })
       .join("");
