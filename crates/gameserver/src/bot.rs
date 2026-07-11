@@ -4,7 +4,7 @@
 //! lives here (not in the sim), so sim determinism is untouched.
 //!
 //! Skill is data, not code: `think()` reads every knob from the
-//! `DifficultyParams` preset for the brain's `BotDifficulty`, so all four
+//! `DifficultyParams` preset for the brain's `BotDifficulty`, so all five
 //! tiers share one decision ladder. Brains run inline in the room's 60 Hz
 //! loop, so everything here must stay allocation-free and O(players + tiles
 //! + projectiles) per tick.
@@ -22,17 +22,19 @@ pub enum BotDifficulty {
     Medium = 1,
     Hard = 2,
     Expert = 3,
+    Impossible = 4,
 }
 
 impl BotDifficulty {
-    /// Clamping decode of the wire byte: out-of-range values become Expert
-    /// rather than a panic or a silent Easy.
+    /// Clamping decode of the wire byte: out-of-range values become the top
+    /// tier rather than a panic or a silent Easy.
     pub fn from_u8(v: u8) -> BotDifficulty {
         match v {
             0 => BotDifficulty::Easy,
             1 => BotDifficulty::Medium,
             2 => BotDifficulty::Hard,
-            _ => BotDifficulty::Expert,
+            3 => BotDifficulty::Expert,
+            _ => BotDifficulty::Impossible,
         }
     }
 
@@ -42,6 +44,7 @@ impl BotDifficulty {
             BotDifficulty::Medium => "MEDIUM",
             BotDifficulty::Hard => "HARD",
             BotDifficulty::Expert => "EXPERT",
+            BotDifficulty::Impossible => "IMPOSSIBLE",
         }
     }
 
@@ -81,11 +84,26 @@ pub struct DifficultyParams {
     pub seek_weapons: bool,
     pub target_weakest: bool,
     pub edge_side_positioning: bool,
+    // Zero-risk play (the Impossible tier). All legal: these only change
+    // which PlayerInputs get emitted.
+    /// Walk out of a telegraphed hit when feet clear in time; the dash is
+    /// spent only when walking can't make it — baiting a swing no longer
+    /// drains the dash cooldown.
+    pub evade_on_foot: bool,
+    /// While the dash recharges, kite out of "dash-in + swing" range so any
+    /// engagement always happens with the defensive i-frame dash available.
+    pub cooldown_caution: bool,
+    /// Melee only into windows that cannot be punished: target launched,
+    /// committed, or with their dash (their only i-frame) on cooldown.
+    pub guaranteed_hits_only: bool,
+    /// Strafe bullets on foot (they telegraph their whole flight); dash only
+    /// for point-blank shots. Walk away from bomb blasts.
+    pub bullet_evasion: bool,
 }
 
 /// Indexed by `BotDifficulty as usize`. Medium reproduces the original
 /// single-tier bot's literals so the default feel is unchanged.
-pub const PRESETS: [DifficultyParams; 4] = [
+pub const PRESETS: [DifficultyParams; 5] = [
     // Easy: half-second reactions, sloppy aim, blunders, strolls off ledges.
     DifficultyParams {
         reaction_ticks: 24,
@@ -106,6 +124,10 @@ pub const PRESETS: [DifficultyParams; 4] = [
         seek_weapons: false,
         target_weakest: false,
         edge_side_positioning: false,
+        evade_on_foot: false,
+        cooldown_caution: false,
+        guaranteed_hits_only: false,
+        bullet_evasion: false,
     },
     // Medium: the original bot, plus a little launch recovery.
     DifficultyParams {
@@ -127,6 +149,10 @@ pub const PRESETS: [DifficultyParams; 4] = [
         seek_weapons: false,
         target_weakest: false,
         edge_side_positioning: false,
+        evade_on_foot: false,
+        cooldown_caution: false,
+        guaranteed_hits_only: false,
+        bullet_evasion: false,
     },
     // Hard: fast, accurate, punishes, dodges half the time, grabs weapons.
     DifficultyParams {
@@ -148,6 +174,10 @@ pub const PRESETS: [DifficultyParams; 4] = [
         seek_weapons: true,
         target_weakest: true,
         edge_side_positioning: false,
+        evade_on_foot: false,
+        cooldown_caution: false,
+        guaranteed_hits_only: false,
+        bullet_evasion: false,
     },
     // Expert: frame-perfect. Its one human-exploitable weakness is the dash
     // cooldown — bait the i-frame dodge, then punish the 45-tick recharge.
@@ -170,6 +200,39 @@ pub const PRESETS: [DifficultyParams; 4] = [
         seek_weapons: true,
         target_weakest: true,
         edge_side_positioning: true,
+        evade_on_foot: false,
+        cooldown_caution: false,
+        guaranteed_hits_only: false,
+        bullet_evasion: false,
+    },
+    // Impossible: Expert with the deliberate weaknesses removed. It never
+    // fights without its defensive dash ready, never swings into a window
+    // that can be punished, walks out of baited attacks, and strafes
+    // bullets. Same inputs, same physics, same cooldowns as everyone else —
+    // it just refuses to take a risk, ever.
+    DifficultyParams {
+        reaction_ticks: 0,
+        aim_jitter: 0.0,
+        blunder_chance: 0.0,
+        light_chance: 1.0,
+        heavy_chance: 1.0,
+        dash_gap_chance: 1.0,
+        jump_chance: 0.0,
+        light_range: 2.9,
+        heavy_range: 3.1,
+        dodge_skill: 1.0,
+        recovery_skill: 1.0,
+        ledge_care: 1.0,
+        punish_skill: 1.0,
+        predictive_recovery: true,
+        predictive_aim: true,
+        seek_weapons: true,
+        target_weakest: true,
+        edge_side_positioning: true,
+        evade_on_foot: true,
+        cooldown_caution: true,
+        guaranteed_hits_only: true,
+        bullet_evasion: true,
     },
 ];
 
@@ -208,6 +271,9 @@ pub struct BotBrain {
     decision: Decision,
     /// Ticks until the next decision refresh.
     refresh_in: u16,
+    /// Committed strafe side while evading a projectile (+1/-1, 0 = unset).
+    /// Re-picking every tick near the corridor axis would oscillate in place.
+    evade_sign: i8,
 }
 
 impl BotBrain {
@@ -218,6 +284,7 @@ impl BotBrain {
             difficulty,
             decision: Decision::default(),
             refresh_in: 0,
+            evade_sign: 0,
         }
     }
 
@@ -423,13 +490,27 @@ fn panic_target(sim: &GameSim, mp: [f32; 3], landing: [f32; 3], goal: Goal) -> O
     center
 }
 
-/// If something is about to hit us, the direction to run (unit, xz) and
-/// whether a perpendicular dash is the right escape (melee swings, bullets)
-/// vs plain distance (bomb blasts).
-fn threat_dir(sim: &GameSim, id: PlayerId, mp: [f32; 3]) -> Option<([f32; 2], bool)> {
+/// A telegraphed incoming hit and what escaping it takes.
+struct Threat {
+    /// Unit xz direction from the threat toward us.
+    away: [f32; 2],
+    /// Perpendicular escape geometry (melee swings, bullets) vs radial
+    /// (bomb blasts).
+    perp: bool,
+    /// Ticks before it can actually hurt us.
+    ticks_left: f32,
+    /// Clearance (units) still needed to be safely outside it.
+    escape_dist: f32,
+    /// Projectile threats gate foot escapes on `bullet_evasion`; melee
+    /// threats on `evade_on_foot`.
+    projectile: bool,
+}
+
+/// Scan for whatever is about to hit us: opponents mid-windup in reach, or
+/// projectiles converging on our position.
+fn find_threat(sim: &GameSim, id: PlayerId, mp: [f32; 3]) -> Option<Threat> {
     let c = consts();
 
-    // Opponents mid-windup within their attack's reach.
     for (&oid, o) in sim.players.iter() {
         if oid == id || !o.alive {
             continue;
@@ -438,23 +519,36 @@ fn threat_dir(sim: &GameSim, id: PlayerId, mp: [f32; 3]) -> Option<([f32; 2], bo
             continue;
         }
         let Some(os) = sim.snapshot(oid) else { continue };
-        let reach = match o.state.attack.kind {
-            AttackKind::Heavy => c.heavy_reach + c.heavy_hit_radius,
-            AttackKind::AirLight => c.air_light_hit_radius,
-            _ => c.light_reach + c.light_hit_radius,
+        let (reach, windup) = match o.state.attack.kind {
+            AttackKind::Heavy => (c.heavy_reach + c.heavy_hit_radius, c.heavy_windup_ticks),
+            AttackKind::AirLight => (c.air_light_hit_radius, c.air_light_windup_ticks),
+            _ => (c.light_reach + c.light_hit_radius, c.light_windup_ticks),
         };
         let dx = mp[0] - os.pos[0];
         let dz = mp[2] - os.pos[2];
         let d = (dx * dx + dz * dz).sqrt();
         if d < reach + c.player_radius + 0.7 {
-            if d < 0.05 {
-                return Some(([1.0, 0.0], true));
-            }
-            return Some(([dx / d, dz / d], true));
+            let ticks_left = windup.saturating_sub(o.state.attack.ticks) as f32;
+            // Clearance vs the actual hit volume, counting the attacker
+            // drifting toward us during the rest of the windup.
+            let closing = if d > 0.05 {
+                ((dx * os.vel[0] + dz * os.vel[2]) / d).max(0.0)
+            } else {
+                0.0
+            };
+            let escape_dist =
+                (reach + c.player_radius + 0.2) - d + closing * ticks_left * dt();
+            let away = if d < 0.05 { [1.0, 0.0] } else { [dx / d, dz / d] };
+            return Some(Threat {
+                away,
+                perp: true,
+                ticks_left,
+                escape_dist,
+                projectile: false,
+            });
         }
     }
 
-    // Projectiles converging on us.
     for pr in sim.projectiles.iter() {
         if pr.owner == id {
             continue;
@@ -478,9 +572,18 @@ fn threat_dir(sim: &GameSim, id: PlayerId, mp: [f32; 3]) -> Option<([f32; 2], bo
         };
         let cx = rx - vx * t;
         let cz = rz - vz * t;
-        if cx * cx + cz * cz < danger * danger {
+        let miss = (cx * cx + cz * cz).sqrt();
+        if miss < danger {
             let d = d2.sqrt().max(0.05);
-            return Some(([rx / d, rz / d], !bomb));
+            // Bombs hurt when the fuse ends; bullets at closest approach.
+            let ticks_left = if bomb { pr.ttl as f32 } else { t / dt() };
+            return Some(Threat {
+                away: [rx / d, rz / d],
+                perp: !bomb,
+                ticks_left,
+                escape_dist: danger - miss,
+                projectile: true,
+            });
         }
     }
     None
@@ -553,7 +656,7 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
         // Steer the trajectory back over ground. Panic tiers aim at where
         // the launch is actually taking them and DI against the overshoot;
         // others head for the tile below (or mid-arena).
-        let (dx, dz) = if p.predictive_recovery {
+        let (mut dx, mut dz) = if p.predictive_recovery {
             let landing = predict_landing(mp, me.vel);
             match panic_target(sim, mp, landing, brain.decision.goal) {
                 Some(g) if !on_solid(sim, landing) => (g[0] - landing[0], g[2] - landing[2]),
@@ -563,6 +666,25 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
             let g = over_void.unwrap_or([0.0; 3]);
             (g[0] - mp[0], g[2] - mp[2])
         };
+        // Zero-risk tiers also refuse to land at an edge-guarder's feet:
+        // we can't act until the launch ends, so a landing inside their
+        // reach is a free juggle hit. DI away from whoever camps it.
+        if p.cooldown_caution {
+            let landing = predict_landing(mp, me.vel);
+            for (&oid, o) in sim.players.iter() {
+                if oid == id || !o.alive || o.state.launched > 0 {
+                    continue;
+                }
+                let Some(os) = sim.snapshot(oid) else { continue };
+                if dist2(landing, os.pos) < 4.5 * 4.5 {
+                    let ax = landing[0] - os.pos[0];
+                    let az = landing[2] - os.pos[2];
+                    let an = (ax * ax + az * az).sqrt().max(0.05);
+                    dx += ax / an * 2.0;
+                    dz += az / an * 2.0;
+                }
+            }
+        }
         let n = (dx * dx + dz * dz).sqrt();
         if n < 0.05 {
             return PlayerInput::default();
@@ -640,44 +762,185 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
         }
     }
 
-    // ---- reflex: dash i-frames through an incoming hit ----
+    // ---- reflex: evade an incoming hit (feet first, then dash i-frames) ----
     let can_act = !me.state.slamming
         && me.state.dash_ticks == 0
         && attack_phase(&me.state) == AttackPhase::None;
-    if can_act && me.state.dash_cd == 0 && brain.prev_emitted == 0 && brain.chance(p.dodge_skill)
-    {
-        if let Some((away, perp)) = threat_dir(sim, id, mp) {
-            // Never dash off the stage: eating the hit is survivable, a
-            // self-ring-out is not. Check where the dash actually ends.
-            let dash_len = c.dash_speed * c.dash_ticks as f32 * dt();
-            let safe = |dir: [f32; 2]| {
-                on_solid(sim, [mp[0] + dir[0] * dash_len, mp[1], mp[2] + dir[1] * dash_len])
+    if can_act && brain.prev_emitted == 0 && brain.chance(p.dodge_skill) {
+        let th = find_threat(sim, id, mp);
+        if th.is_none() {
+            brain.evade_sign = 0;
+        }
+        if let Some(th) = th {
+            // Walking out costs nothing: tiers that can, prefer it whenever
+            // feet clear in time — a baited swing then wastes nothing.
+            let foot_flag = if th.projectile {
+                p.bullet_evasion
+            } else {
+                p.evade_on_foot
             };
-            let mut pick: Option<[f32; 2]> = None;
-            if perp {
-                // Of the two perpendiculars, prefer the mid-arena drift.
-                let (px, pz) = (-away[1], away[0]);
-                let first = if px * mp[0] + pz * mp[2] <= 0.0 {
-                    [px, pz]
+            if foot_flag && th.escape_dist < th.ticks_left * dt() * c.move_speed * 0.85 {
+                let dir = if th.projectile && th.perp {
+                    // Sidestep the bullet corridor. Commit to one side for
+                    // the whole evasion — re-picking near the corridor axis
+                    // would oscillate in place until the bullet arrives.
+                    if brain.evade_sign == 0 {
+                        let (px, pz) = (-th.away[1], th.away[0]);
+                        brain.evade_sign = if px * mp[0] + pz * mp[2] <= 0.0 { 1 } else { -1 };
+                    }
+                    let s = brain.evade_sign as f32;
+                    [-th.away[1] * s, th.away[0] * s]
                 } else {
-                    [-px, -pz]
+                    th.away
                 };
-                for cand in [first, [-first[0], -first[1]]] {
-                    if safe(cand) {
-                        pick = Some(cand);
+                brain.prev_emitted = 0;
+                return PlayerInput {
+                    move_x: dir[0],
+                    move_z: dir[1],
+                    yaw: dir[0].atan2(dir[1]),
+                    buttons: 0,
+                };
+            }
+            if me.state.dash_cd == 0 {
+                // Never dash off the stage: eating the hit is survivable, a
+                // self-ring-out is not. Check where the dash actually ends,
+                // with margin so we don't stop half-off a rim tile.
+                let dash_len = c.dash_speed * c.dash_ticks as f32 * dt() * 1.15;
+                let safe = |dir: [f32; 2]| {
+                    on_solid(sim, [mp[0] + dir[0] * dash_len, mp[1], mp[2] + dir[1] * dash_len])
+                };
+                let mut pick: Option<[f32; 2]> = None;
+                if th.perp {
+                    // Of the two perpendiculars, prefer the mid-arena drift.
+                    let (px, pz) = (-th.away[1], th.away[0]);
+                    let first = if px * mp[0] + pz * mp[2] <= 0.0 {
+                        [px, pz]
+                    } else {
+                        [-px, -pz]
+                    };
+                    for cand in [first, [-first[0], -first[1]]] {
+                        if safe(cand) {
+                            pick = Some(cand);
+                            break;
+                        }
+                    }
+                } else if safe(th.away) {
+                    pick = Some(th.away);
+                }
+                if let Some([ex, ez]) = pick {
+                    brain.prev_emitted = buttons::DASH;
+                    return PlayerInput {
+                        move_x: ex,
+                        move_z: ez,
+                        yaw: ex.atan2(ez),
+                        buttons: buttons::DASH,
+                    };
+                }
+            }
+        }
+    }
+
+    // ---- positioning: never stay pinned against the rim ----
+    // An opponent holding the center side of us at the edge turns every
+    // retreat into a corner. The escape is straight through them: the dash
+    // is fully intangible, so burn it to trade places and take the center.
+    if p.cooldown_caution && can_act && me.state.dash_cd == 0 && brain.prev_emitted == 0 {
+        let my_r2 = mp[0] * mp[0] + mp[2] * mp[2];
+        if my_r2 > 6.5 * 6.5 {
+            let pinned = sim.players.iter().any(|(&oid, o)| {
+                if oid == id || !o.alive || o.state.launched > 0 {
+                    return false;
+                }
+                let Some(os) = sim.snapshot(oid) else { return false };
+                let or2 = os.pos[0] * os.pos[0] + os.pos[2] * os.pos[2];
+                or2 < my_r2 && dist2(mp, os.pos) < 5.0 * 5.0
+            });
+            if pinned {
+                let n = my_r2.sqrt();
+                let dir = [-mp[0] / n, -mp[2] / n];
+                brain.prev_emitted = buttons::DASH;
+                return PlayerInput {
+                    move_x: dir[0],
+                    move_z: dir[1],
+                    yaw: dir[0].atan2(dir[1]),
+                    buttons: buttons::DASH,
+                };
+            }
+        }
+    }
+
+    // ---- caution: while the dash recharges, stay out of dash-in range ----
+    // A dash-in (~3.3 u) plus a swing (~3 u) is the only way to force melee
+    // on us; with our i-frame dash down we refuse to be inside that
+    // envelope. The margin grows with our damage (launches get bigger).
+    if p.cooldown_caution && me.state.dash_cd > 0 && can_act && me.state.powerup != powerup::GUN
+    {
+        let danger_r = 7.5 + me.damage as f32 * 0.02;
+        let mut nearest: Option<([f32; 3], f32)> = None;
+        for (&oid, o) in sim.players.iter() {
+            // Launched or mid-recovery opponents are punish windows, not
+            // threats — never kite through our own free hits.
+            if oid == id
+                || !o.alive
+                || o.state.launched > 0
+                || attack_phase(&o.state) == AttackPhase::Recovery
+            {
+                continue;
+            }
+            let Some(os) = sim.snapshot(oid) else { continue };
+            let d = dist2(mp, os.pos).sqrt();
+            if nearest.map(|(_, nd)| d < nd).unwrap_or(true) {
+                nearest = Some((os.pos, d));
+            }
+        }
+        if let Some((opos, od)) = nearest {
+            if od < danger_r {
+                let d = od.max(0.05);
+                let away = [(mp[0] - opos[0]) / d, (mp[2] - opos[2]) / d];
+                // Retreat along the stage: straight back if solid, else curve
+                // around them (center-preferring rotations), else mid-arena.
+                let probe = |dir: [f32; 2]| {
+                    on_solid(sim, [mp[0] + dir[0] * 1.6, mp[1], mp[2] + dir[1] * 1.6])
+                };
+                let centerness = |dir: [f32; 2]| -(dir[0] * mp[0] + dir[1] * mp[2]);
+                let rot45 = |dir: [f32; 2], s: f32| {
+                    [dir[0] * 0.7071 - dir[1] * s, dir[0] * s + dir[1] * 0.7071]
+                };
+                let (r1, r2) = (rot45(away, 0.7071), rot45(away, -0.7071));
+                let (r1, r2) = if centerness(r1) >= centerness(r2) { (r1, r2) } else { (r2, r1) };
+                let (p1, p2) = ([-away[1], away[0]], [away[1], -away[0]]);
+                let (p1, p2) = if centerness(p1) >= centerness(p2) { (p1, p2) } else { (p2, p1) };
+                // Near the rim, kiting straight back gets us cornered (the
+                // retreat arc loses radial speed to a straight-line chaser):
+                // prefer cutting toward open ground first.
+                let rim = mp[0] * mp[0] + mp[2] * mp[2] > 6.0 * 6.0;
+                let order = if rim {
+                    [r1, p1, away, r2, p2]
+                } else {
+                    [away, r1, r2, p1, p2]
+                };
+                let mut dir = [0.0, 0.0];
+                let mut found = false;
+                for cand in order {
+                    if probe(cand) {
+                        dir = cand;
+                        found = true;
                         break;
                     }
                 }
-            } else if safe(away) {
-                pick = Some(away);
-            }
-            if let Some([ex, ez]) = pick {
-                brain.prev_emitted = buttons::DASH;
+                if !found {
+                    let n = (mp[0] * mp[0] + mp[2] * mp[2]).sqrt().max(0.05);
+                    dir = [-mp[0] / n, -mp[2] / n];
+                }
+                brain.prev_emitted = 0;
+                // Face the opponent while backpedaling: punish-ready.
+                let fx = opos[0] - mp[0];
+                let fz = opos[2] - mp[2];
                 return PlayerInput {
-                    move_x: ex,
-                    move_z: ez,
-                    yaw: ex.atan2(ez),
-                    buttons: buttons::DASH,
+                    move_x: dir[0],
+                    move_z: dir[1],
+                    yaw: fx.atan2(fz),
+                    buttons: 0,
                 };
             }
         }
@@ -730,22 +993,46 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
     let mut in_light = false;
     let mut in_heavy = false;
     let mut d_true = f32::MAX;
+    // Zero-risk tiers: true only when hitting the target cannot be punished.
+    let mut risk_free = true;
+    let mut standoff = false;
+    let mut committed = false;
 
     if chasing {
         let t = tsnap.as_ref().unwrap();
         d_true = dist2(mp, t.pos).sqrt();
         let vulnerable = t.state.dash_ticks == 0 && t.state.invuln == 0;
+        // Committed: they cannot land a NEW hit before a light pressed right
+        // now connects — any recovery, or a heavy windup with more ticks
+        // left than our light needs. (An idle opponent can press the same
+        // tick we do and trade, so idle is never a free hit.)
+        let ph_t = attack_phase(&t.state);
+        committed = ph_t == AttackPhase::Recovery
+            || (t.state.attack.kind == AttackKind::Heavy
+                && ph_t == AttackPhase::Windup
+                && c.heavy_windup_ticks.saturating_sub(t.state.attack.ticks)
+                    > c.light_windup_ticks + 1);
+        if p.guaranteed_hits_only {
+            risk_free = t.state.launched > 0 || committed;
+            standoff = !risk_free;
+        }
         if p.predictive_aim {
-            // Lead by the light windup: press now, and the active window
-            // opens exactly where the target will be.
+            // Lead by the light windup on BOTH sides: where they will be and
+            // where we will be when the active window opens — so a press
+            // mid-approach connects on its first active frame.
             let lead = c.light_windup_ticks as f32 * dt();
             let pl = [
                 t.pos[0] + t.vel[0] * lead,
                 t.pos[1] + t.vel[1] * lead,
                 t.pos[2] + t.vel[2] * lead,
             ];
-            let adx = pl[0] - mp[0];
-            let adz = pl[2] - mp[2];
+            let ml = [
+                mp[0] + me.vel[0] * lead,
+                mp[1],
+                mp[2] + me.vel[2] * lead,
+            ];
+            let adx = pl[0] - ml[0];
+            let adz = pl[2] - ml[2];
             if adx.abs() + adz.abs() > 1e-3 {
                 yaw = adx.atan2(adz);
             }
@@ -753,14 +1040,14 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
             let margin = c.player_radius - 0.1;
             if me.state.grounded {
                 let hc = [
-                    mp[0] + yaw.sin() * c.light_reach,
-                    mp[1],
-                    mp[2] + yaw.cos() * c.light_reach,
+                    ml[0] + yaw.sin() * c.light_reach,
+                    ml[1],
+                    ml[2] + yaw.cos() * c.light_reach,
                 ];
                 in_light = dist3(hc, pl) < c.light_hit_radius + margin;
             } else {
                 // Airborne LIGHT is a 360° spin centered on us.
-                in_light = dist3(mp, pl) < c.air_light_hit_radius + margin;
+                in_light = dist3(ml, pl) < c.air_light_hit_radius + margin;
             }
             // Heavy only into kill windows: launched (helpless) or one good
             // hit from a ring-out. Never swing into i-frames.
@@ -781,6 +1068,11 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
             in_light = d_true < p.light_range;
             in_heavy = me.state.grounded && d_true < p.heavy_range;
         }
+        if standoff {
+            // No free window: don't swing, hold spacing and wait for one.
+            in_light = false;
+            in_heavy = false;
+        }
     }
     yaw += brain.decision.yaw_err;
 
@@ -788,7 +1080,32 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
     let mut want_move = planar > 0.05;
     if chasing {
         let t = tsnap.as_ref().unwrap();
-        if p.predictive_aim && me.state.powerup == powerup::GUN {
+        if standoff && me.state.powerup != powerup::GUN {
+            // Wait just outside their swing envelope (their light hit sphere
+            // reaches ~3.05 u): close enough to pounce on a window, far
+            // enough that only a dash-in reaches us — which we i-frame.
+            if d_true < 4.2 {
+                dx = mp[0] - t.pos[0];
+                dz = mp[2] - t.pos[2];
+                planar = (dx * dx + dz * dz).sqrt().max(0.05);
+                let back = [mp[0] + dx / planar * 1.5, mp[1], mp[2] + dz / planar * 1.5];
+                if !on_solid(sim, back) {
+                    // Cornered against the edge: circle around them instead.
+                    let (px, pz) = (-dz / planar, dx / planar);
+                    let toward_c = if px * mp[0] + pz * mp[2] <= 0.0 {
+                        (px, pz)
+                    } else {
+                        (-px, -pz)
+                    };
+                    dx = toward_c.0;
+                    dz = toward_c.1;
+                    planar = 1.0;
+                }
+                want_move = true;
+            } else {
+                want_move = d_true > 5.5;
+            }
+        } else if p.predictive_aim && me.state.powerup == powerup::GUN {
             // Kite: hold the firing band instead of brawling.
             if d_true < 4.0 {
                 dx = mp[0] - t.pos[0];
@@ -829,10 +1146,7 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
         } else {
             let vulnerable = t.state.dash_ticks == 0 && t.state.invuln == 0;
             let veto = p.predictive_aim && !vulnerable;
-            // A committed opponent (heavy windup, any recovery) is a free hit.
-            let committed = attack_phase(&t.state) == AttackPhase::Recovery
-                || (t.state.attack.kind == AttackKind::Heavy
-                    && attack_phase(&t.state) == AttackPhase::Windup);
+            // A committed opponent (see the fight-context block) is a free hit.
             if committed && !veto && d_true < p.light_range + 0.4 && brain.chance(p.punish_skill)
             {
                 btn = buttons::LIGHT;
@@ -843,6 +1157,11 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
             } else if d_true > 3.5
                 && d_true < 8.0
                 && me.state.dash_cd == 0
+                // For zero-risk tiers risk_free is the strict no-trade
+                // window (committed/launched), so bursting in with the dash
+                // converts the window before it closes; the hit launches
+                // them, which covers our own cooldown afterwards.
+                && risk_free
                 && brain.chance(p.dash_gap_chance)
                 && on_solid(sim, t.pos)
             {
@@ -1154,6 +1473,131 @@ mod tests {
             let end = [1.6 + i.move_x * dash_len, 1.0, i.move_z * dash_len];
             assert!(on_solid(&sim, end), "dodge dash must land on solid tiles");
         }
+    }
+
+    #[test]
+    fn impossible_walks_out_of_a_baited_swing() {
+        // Opponent presses light at the very edge of reach — the classic
+        // dash-bait. Impossible walks out and keeps its dash; Expert burns it.
+        let build = || {
+            let mut sim = sim_with(&[(0, [0.0, 1.0, 0.0]), (1, [2.9, 1.0, 0.0])]);
+            let t = sim.players.get_mut(&1).unwrap();
+            t.state.attack.kind = AttackKind::Light;
+            t.state.attack.ticks = 0;
+            sim
+        };
+        let sim = build();
+        let mut imp = BotBrain::new(0, BotDifficulty::Impossible);
+        let i = think(&sim, 0, &mut imp);
+        assert_eq!(i.buttons, 0, "impossible should not spend the dash on a bait");
+        assert!(i.move_x < -0.5, "it should be walking out, got move_x {}", i.move_x);
+        let sim = build();
+        let mut exp = BotBrain::new(0, BotDifficulty::Expert);
+        let i = think(&sim, 0, &mut exp);
+        assert_eq!(i.buttons, buttons::DASH, "expert takes the bait");
+    }
+
+    #[test]
+    fn impossible_kites_while_dash_recharges() {
+        let mut sim = sim_with(&[(0, [0.0, 1.0, 0.0]), (1, [4.0, 1.0, 0.0])]);
+        let mut s = sim.snapshot(0).unwrap();
+        s.state.dash_cd = 40;
+        sim.restore(0, &s);
+        let mut imp = BotBrain::new(0, BotDifficulty::Impossible);
+        let i = think(&sim, 0, &mut imp);
+        assert_eq!(i.buttons, 0, "no attacks while the defensive dash is down");
+        assert!(
+            i.move_x < -0.5,
+            "should kite away from the opponent, got move_x {}",
+            i.move_x
+        );
+    }
+
+    #[test]
+    fn impossible_dodges_bullets_on_foot() {
+        // A gunner 11 units out, firing straight at us: plenty of flight
+        // time, so strafe on foot, keep the dash, take zero damage.
+        let mut sim = sim_with(&[(0, [0.0, 1.0, 0.0]), (1, [11.0, 1.0, 0.0])]);
+        let mut s = sim.snapshot(1).unwrap();
+        s.state.powerup = powerup::GUN;
+        s.state.powerup_ticks = 600;
+        sim.restore(1, &s);
+        let mut imp = BotBrain::new(0, BotDifficulty::Impossible);
+        let mut inputs = BTreeMap::new();
+        let gunner_yaw = (-11.0f32).atan2(0.0); // facing the bot
+        for tick in 0..60 {
+            let i = think(&sim, 0, &mut imp);
+            assert_ne!(i.buttons, buttons::DASH, "bullets should be strafed, not dashed");
+            inputs.insert(0, i);
+            // Fire on the first tick (rising edge), then hold facing.
+            inputs.insert(
+                1,
+                PlayerInput {
+                    move_x: 0.0,
+                    move_z: 0.0,
+                    yaw: gunner_yaw,
+                    buttons: if tick == 0 { buttons::LIGHT } else { 0 },
+                },
+            );
+            sim.step(&inputs);
+        }
+        assert_eq!(sim.snapshot(0).unwrap().damage, 0, "a strafed bullet never lands");
+    }
+
+    /// Run one shrink-forced duel to the first death; returns the loser.
+    fn duel(a_diff: BotDifficulty, a: [f32; 3], b_diff: BotDifficulty, b: [f32; 3]) -> Option<u8> {
+        let mut sim = sim_with(&[(0, a), (1, b)]);
+        let mut ba = BotBrain::new(0, a_diff);
+        let mut bb = BotBrain::new(1, b_diff);
+        let mut inputs = BTreeMap::new();
+        // Stop before the last tiles fall — past that both must die and the
+        // order stops meaning anything.
+        for tick in 0..4200u32 {
+            sim.arena_apply_until(tick);
+            inputs.insert(0, think(&sim, 0, &mut ba));
+            inputs.insert(1, think(&sim, 1, &mut bb));
+            for e in sim.step(&inputs) {
+                if let SimEvent::Death { player, .. } = e {
+                    return Some(player);
+                }
+            }
+        }
+        None
+    }
+
+    const DUEL_SPAWNS: [([f32; 3], [f32; 3]); 3] = [
+        ([4.0, 1.2, 0.0], [-4.0, 1.2, 0.0]),
+        ([2.0, 1.2, 3.0], [-3.0, 1.2, -2.0]),
+        ([6.0, 1.2, 1.0], [1.0, 1.2, -5.0]),
+    ];
+
+    #[test]
+    fn impossible_sweeps_hard_in_duels() {
+        // Hard is the strongest human-like opponent (near-instant reactions,
+        // 50% opportunity conversion). "Impossible for humans" means this
+        // must be a clean sweep.
+        for (a, b) in DUEL_SPAWNS {
+            let dead = duel(BotDifficulty::Impossible, a, BotDifficulty::Hard, b);
+            assert_eq!(dead, Some(1), "hard must fall first from spawn {a:?}");
+        }
+    }
+
+    #[test]
+    fn impossible_holds_the_edge_over_expert() {
+        // Two frame-perfect agents with identical physics sit near parity:
+        // individual duels are chaotically sensitive to spawn geometry, so
+        // the stable guarantee is the majority, not a sweep. (No human plays
+        // remotely like Expert — the human-proxy guarantees are the strict
+        // bait/kite/bullet/no-trade tests above.)
+        let mut wins = 0;
+        for (a, b) in DUEL_SPAWNS {
+            match duel(BotDifficulty::Impossible, a, BotDifficulty::Expert, b) {
+                Some(1) => wins += 1,
+                Some(0) => {}
+                other => panic!("shrink must force a result, got {other:?} from {a:?}"),
+            }
+        }
+        assert!(wins >= 2, "impossible should win most duels vs expert ({wins}/3)");
     }
 
     #[test]

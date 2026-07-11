@@ -124,7 +124,7 @@ export type ServerMsg =
   | { type: "Error"; msg: string };
 
 // Must match gameserver bot::BotDifficulty.
-export const BOT_DIFF_NAMES = ["EASY", "MEDIUM", "HARD", "EXPERT"] as const;
+export const BOT_DIFF_NAMES = ["EASY", "MEDIUM", "HARD", "EXPERT", "IMPOSSIBLE"] as const;
 
 // Must match sim::types::buttons.
 export const BTN_JUMP = 1 << 0;

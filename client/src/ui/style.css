@@ -323,6 +323,10 @@ body {
   --diff: #ff5d6e;
 }
 
+.diff-4 {
+  --diff: #c77dff;
+}
+
 .bot-tag[class*="diff-"] {
   color: var(--diff);
   opacity: 0.95;

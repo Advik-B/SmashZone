@@ -1087,10 +1087,10 @@ mod bot_tests {
         assert_eq!(bot.meta.difficulty, 3);
         let brain = room.bots.values().next().unwrap();
         assert_eq!(brain.difficulty(), crate::bot::BotDifficulty::Expert);
-        // Out-of-range wire values clamp to Expert rather than panicking.
+        // Out-of-range wire values clamp to the top tier rather than panicking.
         room.handle_msg(0, ClientMsg::AddBot { difficulty: 200 });
         let last = room.players.values().filter(|p| p.bot).last().unwrap();
-        assert_eq!(last.meta.difficulty, 3);
+        assert_eq!(last.meta.difficulty, crate::bot::BotDifficulty::Impossible as u8);
     }
 
     #[test]
