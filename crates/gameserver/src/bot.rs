@@ -74,6 +74,9 @@ pub struct DifficultyParams {
     pub ledge_care: f32,
     pub punish_skill: f32,
     // Tier capabilities.
+    /// Panic mode: predict the ballistic landing point and start recovering
+    /// *before* leaving the stage, spending dash + jumps aggressively.
+    pub predictive_recovery: bool,
     pub predictive_aim: bool,
     pub seek_weapons: bool,
     pub target_weakest: bool,
@@ -98,6 +101,7 @@ pub const PRESETS: [DifficultyParams; 4] = [
         recovery_skill: 0.0,
         ledge_care: 0.5,
         punish_skill: 0.0,
+        predictive_recovery: false,
         predictive_aim: false,
         seek_weapons: false,
         target_weakest: false,
@@ -118,6 +122,7 @@ pub const PRESETS: [DifficultyParams; 4] = [
         recovery_skill: 0.35,
         ledge_care: 1.0,
         punish_skill: 0.0,
+        predictive_recovery: false,
         predictive_aim: false,
         seek_weapons: false,
         target_weakest: false,
@@ -138,6 +143,7 @@ pub const PRESETS: [DifficultyParams; 4] = [
         recovery_skill: 0.8,
         ledge_care: 1.0,
         punish_skill: 0.5,
+        predictive_recovery: false,
         predictive_aim: true,
         seek_weapons: true,
         target_weakest: true,
@@ -159,6 +165,7 @@ pub const PRESETS: [DifficultyParams; 4] = [
         recovery_skill: 1.0,
         ledge_care: 1.0,
         punish_skill: 1.0,
+        predictive_recovery: true,
         predictive_aim: true,
         seek_weapons: true,
         target_weakest: true,
@@ -356,6 +363,66 @@ fn safe_tile_center(sim: &GameSim, pos: [f32; 3]) -> Option<[f32; 3]> {
     center
 }
 
+/// Body-center height when standing on a tile (tile tops are y = 0, capsule
+/// radius 0.45 + half-height 0.55).
+const REST_Y: f32 = 1.0;
+
+/// Zero-input ballistic landing point: where we come back down to standing
+/// height if we do nothing from here. Panic mode uses it to spot a doomed
+/// trajectory while still above the stage.
+fn predict_landing(pos: [f32; 3], vel: [f32; 3]) -> [f32; 3] {
+    let g = -consts().gravity; // positive down
+    let h = pos[1] - REST_Y;
+    let t = if h <= 0.0 && vel[1] <= 0.0 {
+        0.0 // already at/below deck height and sinking: judge where we are
+    } else {
+        // h + vy*t - g/2*t^2 = 0, positive root. A negative discriminant
+        // (rising from below, never reaching deck height) degrades to the
+        // apex time.
+        let disc = vel[1] * vel[1] + 2.0 * g * h;
+        (vel[1] + disc.max(0.0).sqrt()) / g
+    };
+    [pos[0] + vel[0] * t, REST_Y, pos[2] + vel[2] * t]
+}
+
+/// The platform to boost toward in a panic: the solid tile nearest to where
+/// the trajectory is heading, tie-broken toward us. Mid pickup-hop, prefer
+/// the weapon's island so panic doesn't cancel the detour.
+fn panic_target(sim: &GameSim, mp: [f32; 3], landing: [f32; 3], goal: Goal) -> Option<[f32; 3]> {
+    let mut best = f32::MAX;
+    let mut center: Option<[f32; 3]> = None;
+    let mut pk_best = f32::MAX;
+    let mut pk_center: Option<[f32; 3]> = None;
+    let pk = match goal {
+        Goal::Pickup(p) => Some(p),
+        _ => None,
+    };
+    for t in sim.arena.tiles.iter() {
+        if t.state != TileState::Solid {
+            continue;
+        }
+        let ctr = t.center();
+        let score = dist2(landing, ctr) + 0.5 * dist2(mp, ctr);
+        if score < best {
+            best = score;
+            center = Some(ctr);
+        }
+        if let Some(pk) = pk {
+            let d = dist2(pk, ctr);
+            if d < pk_best {
+                pk_best = d;
+                pk_center = Some(ctr);
+            }
+        }
+    }
+    if let (Some(pc), Some(c)) = (pk_center, center) {
+        if dist2(mp, pc).sqrt() <= dist2(mp, c).sqrt() + 6.0 {
+            return Some(pc);
+        }
+    }
+    center
+}
+
 /// If something is about to hit us, the direction to run (unit, xz) and
 /// whether a perpendicular dash is the right escape (melee swings, bullets)
 /// vs plain distance (bomb blasts).
@@ -483,10 +550,19 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
         if !brain.chance(p.recovery_skill) {
             return PlayerInput::default();
         }
-        // Steer back over ground: the nearest solid tile, or mid-arena.
-        let g = over_void.unwrap_or([0.0; 3]);
-        let dx = g[0] - mp[0];
-        let dz = g[2] - mp[2];
+        // Steer the trajectory back over ground. Panic tiers aim at where
+        // the launch is actually taking them and DI against the overshoot;
+        // others head for the tile below (or mid-arena).
+        let (dx, dz) = if p.predictive_recovery {
+            let landing = predict_landing(mp, me.vel);
+            match panic_target(sim, mp, landing, brain.decision.goal) {
+                Some(g) if !on_solid(sim, landing) => (g[0] - landing[0], g[2] - landing[2]),
+                _ => (0.0, 0.0), // trajectory already lands safe: ride it out
+            }
+        } else {
+            let g = over_void.unwrap_or([0.0; 3]);
+            (g[0] - mp[0], g[2] - mp[2])
+        };
         let n = (dx * dx + dz * dz).sqrt();
         if n < 0.05 {
             return PlayerInput::default();
@@ -499,35 +575,69 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
         };
     }
 
-    // ---- reflex: air recovery (jump / dash back to solid ground) ----
-    if !me.state.grounded && over_void.is_some() && brain.chance(p.recovery_skill) {
+    // ---- reflex: air recovery / panic (boost back to solid ground) ----
+    // Panic tiers trigger as soon as the ballistic landing point misses the
+    // stage — while still above it; reactive tiers wait until they're past
+    // the edge. The steer vector differs too: panic pushes against the
+    // *landing* overshoot, reactive walks toward the tile from where it is.
+    let panic_steer: Option<([f32; 2], bool)> = if me.state.grounded {
+        None
+    } else if p.predictive_recovery {
+        let landing = predict_landing(mp, me.vel);
+        if on_solid(sim, landing) {
+            None
+        } else {
+            panic_target(sim, mp, landing, brain.decision.goal)
+                .map(|g| ([g[0] - landing[0], g[2] - landing[2]], true))
+        }
+    } else if over_void.is_some() {
         let g = match brain.decision.goal {
             // Mid island-hop: keep flying to the weapon, not back to shore.
             Goal::Pickup(pk) => pk,
             _ => over_void.unwrap(),
         };
-        let dx = g[0] - mp[0];
-        let dz = g[2] - mp[2];
-        let n = (dx * dx + dz * dz).sqrt().max(0.05);
-        let mut btn = 0u8;
-        let busy = me.state.slamming
-            || me.state.dash_ticks > 0
-            || attack_phase(&me.state) != AttackPhase::None;
-        // Spend the double jump at the fall's peak, the dash as a last resort.
-        if brain.prev_emitted == 0 && !busy && me.vel[1] < 0.5 {
-            if me.state.jump_count < c.max_jumps {
-                btn = buttons::JUMP;
-            } else if me.state.dash_cd == 0 && n > 1.5 {
-                btn = buttons::DASH;
+        Some(([g[0] - mp[0], g[2] - mp[2]], false))
+    } else {
+        None
+    };
+    if let Some(([dx, dz], panicking)) = panic_steer {
+        if brain.chance(p.recovery_skill) {
+            let n = (dx * dx + dz * dz).sqrt().max(0.05);
+            let mut btn = 0u8;
+            let busy = me.state.slamming
+                || me.state.dash_ticks > 0
+                || attack_phase(&me.state) != AttackPhase::None;
+            if brain.prev_emitted == 0 && !busy {
+                let falling = me.vel[1] < 0.5;
+                if panicking {
+                    // Spend everything, biggest boost first: dash covers the
+                    // most ground and pauses gravity, so don't hoard it. Jump
+                    // at the fall's peak — or instantly once below deck level.
+                    let urgent = mp[1] < REST_Y && me.vel[1] < 2.0;
+                    if me.state.dash_cd == 0 && n > 2.5 {
+                        btn = buttons::DASH;
+                    } else if (falling || urgent) && me.state.jump_count < c.max_jumps {
+                        btn = buttons::JUMP;
+                    } else if falling && me.state.dash_cd == 0 && n > 1.0 {
+                        btn = buttons::DASH;
+                    }
+                } else if falling {
+                    // Reactive tiers: double jump at the peak, dash as backup.
+                    if me.state.jump_count < c.max_jumps {
+                        btn = buttons::JUMP;
+                    } else if me.state.dash_cd == 0 && n > 1.5 {
+                        btn = buttons::DASH;
+                    }
+                }
             }
+            brain.prev_emitted = btn;
+            return PlayerInput {
+                move_x: dx / n,
+                move_z: dz / n,
+                yaw: dx.atan2(dz),
+                buttons: btn,
+            };
         }
-        brain.prev_emitted = btn;
-        return PlayerInput {
-            move_x: dx / n,
-            move_z: dz / n,
-            yaw: dx.atan2(dz),
-            buttons: btn,
-        };
     }
 
     // ---- reflex: dash i-frames through an incoming hit ----
@@ -537,24 +647,39 @@ pub fn think(sim: &GameSim, id: PlayerId, brain: &mut BotBrain) -> PlayerInput {
     if can_act && me.state.dash_cd == 0 && brain.prev_emitted == 0 && brain.chance(p.dodge_skill)
     {
         if let Some((away, perp)) = threat_dir(sim, id, mp) {
-            let (ex, ez) = if perp {
-                // Of the two perpendiculars, take the one drifting mid-arena.
+            // Never dash off the stage: eating the hit is survivable, a
+            // self-ring-out is not. Check where the dash actually ends.
+            let dash_len = c.dash_speed * c.dash_ticks as f32 * dt();
+            let safe = |dir: [f32; 2]| {
+                on_solid(sim, [mp[0] + dir[0] * dash_len, mp[1], mp[2] + dir[1] * dash_len])
+            };
+            let mut pick: Option<[f32; 2]> = None;
+            if perp {
+                // Of the two perpendiculars, prefer the mid-arena drift.
                 let (px, pz) = (-away[1], away[0]);
-                if px * mp[0] + pz * mp[2] <= 0.0 {
-                    (px, pz)
+                let first = if px * mp[0] + pz * mp[2] <= 0.0 {
+                    [px, pz]
                 } else {
-                    (-px, -pz)
+                    [-px, -pz]
+                };
+                for cand in [first, [-first[0], -first[1]]] {
+                    if safe(cand) {
+                        pick = Some(cand);
+                        break;
+                    }
                 }
-            } else {
-                (away[0], away[1])
-            };
-            brain.prev_emitted = buttons::DASH;
-            return PlayerInput {
-                move_x: ex,
-                move_z: ez,
-                yaw: ex.atan2(ez),
-                buttons: buttons::DASH,
-            };
+            } else if safe(away) {
+                pick = Some(away);
+            }
+            if let Some([ex, ez]) = pick {
+                brain.prev_emitted = buttons::DASH;
+                return PlayerInput {
+                    move_x: ex,
+                    move_z: ez,
+                    yaw: ex.atan2(ez),
+                    buttons: buttons::DASH,
+                };
+            }
         }
     }
 
@@ -936,6 +1061,98 @@ mod tests {
                 }
             }
             assert_eq!(dead, Some(1), "expert must ring out easy from spawn {a:?}");
+        }
+    }
+
+    #[test]
+    fn expert_panics_before_leaving_the_platform() {
+        // Airborne above solid ground, but the ballistic arc lands off-stage:
+        // panic mode must already be steering inward. Hard's reactive
+        // recovery hasn't fired yet — it's still over solid tiles.
+        let mut sim = sim_with(&[(0, [9.0, 3.0, 0.0])]);
+        place(&mut sim, 0, [9.0, 3.0, 0.0], [10.0, 0.0, 0.0]);
+        let mut expert = BotBrain::new(0, BotDifficulty::Expert);
+        let i = think(&sim, 0, &mut expert);
+        assert!(
+            i.move_x < -0.5,
+            "expert should steer against the overshoot, got move_x {}",
+            i.move_x
+        );
+        let mut hard = BotBrain::new(0, BotDifficulty::Hard);
+        let i = think(&sim, 0, &mut hard);
+        assert!(
+            i.move_x > -0.1,
+            "hard reacts only once past the edge, got move_x {}",
+            i.move_x
+        );
+    }
+
+    #[test]
+    fn panic_dashes_across_a_big_gap_when_jumps_are_spent() {
+        let mut sim = sim_with(&[(0, [14.0, 2.0, 0.0])]);
+        let mut s = sim.snapshot(0).unwrap();
+        s.pos = [14.0, 2.0, 0.0];
+        s.vel = [0.0, -1.0, 0.0];
+        s.state.jump_count = 2;
+        sim.restore(0, &s);
+        let mut expert = BotBrain::new(0, BotDifficulty::Expert);
+        let i = think(&sim, 0, &mut expert);
+        assert_eq!(i.buttons, buttons::DASH, "dash is the only boost left");
+        assert!(i.move_x < -0.5, "dash must point at the deck, got {}", i.move_x);
+    }
+
+    #[test]
+    fn panic_prefers_dash_even_with_jumps_left() {
+        // Big gap: dash first (more distance, pauses gravity), keep the
+        // jumps for after.
+        let mut sim = sim_with(&[(0, [14.0, 2.0, 0.0])]);
+        place(&mut sim, 0, [14.0, 2.0, 0.0], [0.0, -1.0, 0.0]);
+        let mut expert = BotBrain::new(0, BotDifficulty::Expert);
+        let i = think(&sim, 0, &mut expert);
+        assert_eq!(i.buttons, buttons::DASH, "big gap: dash before jumping");
+    }
+
+    #[test]
+    fn expert_survives_a_violent_edge_launch() {
+        // Stronger than the mild scenario above: without the panic ladder
+        // (dash-first + urgent below-deck jumps) this launch is lethal.
+        let mut sim = sim_with(&[(0, [8.0, 1.2, 0.0])]);
+        let mut s = sim.snapshot(0).unwrap();
+        s.vel = [14.0, 7.0, 0.0];
+        s.state.launched = 45;
+        sim.restore(0, &s);
+        let mut brain = BotBrain::new(0, BotDifficulty::Expert);
+        let mut inputs = BTreeMap::new();
+        for tick in 0..600 {
+            inputs.insert(0, think(&sim, 0, &mut brain));
+            let evs = sim.step(&inputs);
+            assert!(
+                !evs.iter().any(|e| matches!(e, SimEvent::Death { .. })),
+                "expert died to a violent edge launch at tick {tick}"
+            );
+        }
+    }
+
+    #[test]
+    fn dodge_dash_never_leaves_the_stage() {
+        let mut sim = sim_with(&[(0, [1.6, 1.0, 0.0]), (1, [0.2, 1.0, 0.0])]);
+        // Shrink until only rings 0-1 remain (a 3x3 platform), so every
+        // perpendicular dash from the rim would fly off the stage.
+        let c = consts();
+        sim.arena_apply_until(
+            c.shrink_start_ticks + 3 * c.shrink_ring_interval_ticks + c.tile_warning_ticks + 1,
+        );
+        assert!(on_solid(&sim, [1.6, 1.0, 0.0]), "bot should still be on the stage");
+        assert!(!on_solid(&sim, [1.6, 1.0, 3.3]), "ring 2 should be gone");
+        let t = sim.players.get_mut(&1).unwrap();
+        t.state.attack.kind = AttackKind::Heavy;
+        t.state.attack.ticks = 2;
+        let mut expert = BotBrain::new(0, BotDifficulty::Expert);
+        let i = think(&sim, 0, &mut expert);
+        if i.buttons == buttons::DASH {
+            let dash_len = c.dash_speed * c.dash_ticks as f32 * dt();
+            let end = [1.6 + i.move_x * dash_len, 1.0, i.move_z * dash_len];
+            assert!(on_solid(&sim, end), "dodge dash must land on solid tiles");
         }
     }
 
