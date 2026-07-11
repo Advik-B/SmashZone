@@ -13,6 +13,9 @@ pub struct PlayerMeta {
     pub slot: u8,
     /// True for server-controlled bots (appended — never reorder).
     pub bot: bool,
+    /// Bot difficulty 0=Easy..3=Expert (see gameserver `bot::BotDifficulty`);
+    /// 0 for humans. Appended — never reorder (postcard is positional).
+    pub difficulty: u8,
 }
 
 /// Quantized per-tick input. move_x/move_z are -127..=127 mapped to -1..=1;
@@ -32,8 +35,9 @@ pub enum ClientMsg {
     StartMatch,
     Rematch,
     Ping { t: u32 },
-    /// Host-only, lobby-only: add / remove a practice bot.
-    AddBot,
+    /// Host-only, lobby-only: add / remove a practice bot. `difficulty` is
+    /// 0=Easy..3=Expert; the server clamps out-of-range values.
+    AddBot { difficulty: u8 },
     RemoveBot { id: PlayerId },
 }
 
@@ -284,6 +288,36 @@ mod tests {
                 assert_eq!(s.pickups[0].kind, 1);
                 assert_eq!(s.projectiles[0].id, 9);
                 assert!((dequant_vel(s.projectiles[0].vx) - 28.0).abs() < 0.1);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_add_bot_difficulty() {
+        let bytes = encode(&ClientMsg::AddBot { difficulty: 3 });
+        match decode::<ClientMsg>(&bytes).unwrap() {
+            ClientMsg::AddBot { difficulty } => assert_eq!(difficulty, 3),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_player_meta_difficulty() {
+        let msg = ServerMsg::PlayerJoined {
+            meta: PlayerMeta {
+                id: 5,
+                name: "BOT 5".into(),
+                slot: 5,
+                bot: true,
+                difficulty: 2,
+            },
+        };
+        let bytes = encode(&msg);
+        match decode::<ServerMsg>(&bytes).unwrap() {
+            ServerMsg::PlayerJoined { meta } => {
+                assert!(meta.bot);
+                assert_eq!(meta.difficulty, 2);
             }
             _ => panic!("wrong variant"),
         }

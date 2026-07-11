@@ -8,6 +8,8 @@ export interface PlayerMeta {
   name: string;
   slot: number;
   bot: boolean;
+  /** Bot difficulty index into BOT_DIFF_NAMES; 0 for humans. */
+  difficulty: number;
 }
 
 export interface PlayerState {
@@ -107,12 +109,22 @@ export type ServerMsg =
       tick: number;
       token: string;
     }
-  | { type: "PlayerJoined"; id: number; name: string; slot: number; bot: boolean }
+  | {
+      type: "PlayerJoined";
+      id: number;
+      name: string;
+      slot: number;
+      bot: boolean;
+      difficulty: number;
+    }
   | { type: "PlayerLeft"; id: number }
   | { type: "PhaseChange"; phase: Phase; tick: number }
   | { type: "Snapshot"; snapshot: Snapshot }
   | { type: "Pong"; t: number }
   | { type: "Error"; msg: string };
+
+// Must match gameserver bot::BotDifficulty.
+export const BOT_DIFF_NAMES = ["EASY", "MEDIUM", "HARD", "EXPERT"] as const;
 
 // Must match sim::types::buttons.
 export const BTN_JUMP = 1 << 0;

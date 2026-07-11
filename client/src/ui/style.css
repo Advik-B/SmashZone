@@ -306,6 +306,64 @@ body {
   min-width: 0;
 }
 
+/* Bot difficulty accents, shared by the picker buttons and lobby BOT tags. */
+.diff-0 {
+  --diff: #6fe08a;
+}
+
+.diff-1 {
+  --diff: #5ec4ff;
+}
+
+.diff-2 {
+  --diff: #ffb04d;
+}
+
+.diff-3 {
+  --diff: #ff5d6e;
+}
+
+.bot-tag[class*="diff-"] {
+  color: var(--diff);
+  opacity: 0.95;
+}
+
+/* Lobby add-bot row: one small plate per difficulty tier. */
+.addbot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bot-add {
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  border-radius: 7px;
+  background: #232a4a;
+  border: 1px solid #343d68;
+  border-top: 3px solid var(--diff, #343d68);
+  border-bottom: 3px solid #12162c;
+  color: #cdd3f0;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.bot-add:hover {
+  background: #2b3357;
+}
+
+.bot-add:active {
+  border-bottom-width: 1px;
+  transform: translateY(2px);
+}
+
+.bot-add:focus-visible {
+  outline: 2px solid #7d8aff;
+  outline-offset: 2px;
+}
+
 .quality-cards {
   display: flex;
   gap: 8px;

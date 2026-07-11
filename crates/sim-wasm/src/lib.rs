@@ -24,6 +24,7 @@ struct JsPlayerMeta {
     name: String,
     slot: u8,
     bot: bool,
+    difficulty: u8,
 }
 
 #[derive(Serialize)]
@@ -227,6 +228,7 @@ enum JsServerMsg {
         name: String,
         slot: u8,
         bot: bool,
+        difficulty: u8,
     },
     PlayerLeft {
         id: u8,
@@ -338,6 +340,7 @@ pub fn decode_server_msg(bytes: &[u8]) -> JsValue {
                     name: m.name.clone(),
                     slot: m.slot,
                     bot: m.bot,
+                    difficulty: m.difficulty,
                 })
                 .collect(),
             phase: phase.into(),
@@ -349,6 +352,7 @@ pub fn decode_server_msg(bytes: &[u8]) -> JsValue {
             name: meta.name.clone(),
             slot: meta.slot,
             bot: meta.bot,
+            difficulty: meta.difficulty,
         },
         ServerMsg::PlayerLeft { id } => JsServerMsg::PlayerLeft { id: *id },
         ServerMsg::PhaseChange { phase, tick } => JsServerMsg::PhaseChange {
@@ -391,8 +395,8 @@ pub fn encode_ping(t: u32) -> Vec<u8> {
 }
 
 #[wasm_bindgen]
-pub fn encode_add_bot() -> Vec<u8> {
-    protocol::encode(&ClientMsg::AddBot)
+pub fn encode_add_bot(difficulty: u8) -> Vec<u8> {
+    protocol::encode(&ClientMsg::AddBot { difficulty })
 }
 
 #[wasm_bindgen]

@@ -1,4 +1,4 @@
-import type { Phase, PlayerMeta, Score } from "../net/messages";
+import { BOT_DIFF_NAMES, type Phase, type PlayerMeta, type Score } from "../net/messages";
 import constants from "../../../shared/constants.json";
 import { isTouchDevice, savedInputMode, type InputMode } from "../game/input";
 import type { Quality } from "../game/quality";
@@ -133,7 +133,7 @@ export interface PhaseCtx {
   code: string;
   onStart: () => void;
   onRematch: () => void;
-  onAddBot: () => void;
+  onAddBot: (difficulty: number) => void;
   onRemoveBot: (id: number) => void;
 }
 
@@ -489,7 +489,12 @@ export class UI {
           <div class="code">${esc(ctx.code)}</div>
           <div class="players">${[...ctx.metas.values()]
             .map((m) => {
-              const tag = m.bot ? `<span class="bot-tag">BOT</span>` : "";
+              // Difficulty names are our own constants, not wire text.
+              const tag = m.bot
+                ? `<span class="bot-tag diff-${m.difficulty}">BOT · ${
+                    BOT_DIFF_NAMES[m.difficulty] ?? "?"
+                  }</span>`
+                : "";
               const star = m.id === ctx.host ? " ★" : "";
               const rm =
                 isHost && m.bot
@@ -503,13 +508,25 @@ export class UI {
               ? `<button id="h-start" class="big-btn">START MATCH</button>`
               : `<div class="hint">waiting for the host to start…</div>`
           }
-          ${canAddBot ? `<button id="h-addbot" class="secondary">+ Add Bot</button>` : ""}
+          ${
+            canAddBot
+              ? `<div class="addbot-row"><span class="hint">+ add bot</span>${BOT_DIFF_NAMES.map(
+                  (n, i) =>
+                    // Keep #h-addbot on Medium: it stays the "default" add-bot
+                    // hook for tooling and muscle memory.
+                    `<button class="bot-add diff-${i}" data-diff="${i}"${
+                      i === 1 ? ` id="h-addbot"` : ""
+                    }>${n}</button>`,
+                ).join("")}</div>`
+              : ""
+          }
           <div class="hint">you can run around and brawl while you wait — falling off just respawns you</div>
         </div>`;
       const btn = document.getElementById("h-start");
       if (btn) btn.onclick = ctx.onStart;
-      const addBot = document.getElementById("h-addbot");
-      if (addBot) addBot.onclick = ctx.onAddBot;
+      for (const b of this.overlay.querySelectorAll<HTMLButtonElement>(".bot-add")) {
+        b.onclick = () => ctx.onAddBot(Number(b.dataset.diff));
+      }
       for (const x of this.overlay.querySelectorAll<HTMLButtonElement>(".bot-x")) {
         x.onclick = () => ctx.onRemoveBot(Number(x.dataset.bot));
       }

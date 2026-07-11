@@ -212,7 +212,7 @@ export class GameClient {
       code: this.code,
       onStart: () => this.conn.send(encode_start_match()),
       onRematch: () => this.conn.send(encode_rematch()),
-      onAddBot: () => this.conn.send(encode_add_bot()),
+      onAddBot: (difficulty: number) => this.conn.send(encode_add_bot(difficulty)),
       onRemoveBot: (id: number) => this.conn.send(encode_remove_bot(id)),
     };
   }
@@ -243,7 +243,13 @@ export class GameClient {
         break;
       }
       case "PlayerJoined": {
-        const m = { id: msg.id, name: msg.name, slot: msg.slot, bot: msg.bot };
+        const m = {
+          id: msg.id,
+          name: msg.name,
+          slot: msg.slot,
+          bot: msg.bot,
+          difficulty: msg.difficulty,
+        };
         this.metas.set(m.id, m);
         this.buffers.set(m.id, []);
         this.renderer.addPlayer(m.id, m.name, m.slot);

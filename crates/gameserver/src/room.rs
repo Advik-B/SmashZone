@@ -222,6 +222,7 @@ impl Room {
             name: sanitize_name(&name),
             slot: id,
             bot: false,
+            difficulty: 0,
         };
         // Announce to existing players first.
         self.broadcast(&ServerMsg::PlayerJoined { meta: meta.clone() });
@@ -348,11 +349,12 @@ impl Room {
     }
 
     /// Add a practice bot (host + lobby gated by the caller).
-    fn handle_add_bot(&mut self) {
+    fn handle_add_bot(&mut self, difficulty: u8) {
         let c = consts();
         if self.players.len() >= c.max_players as usize {
             return;
         }
+        let diff = crate::bot::BotDifficulty::from_u8(difficulty);
         let id = (0..c.max_players)
             .find(|i| !self.players.contains_key(i))
             .unwrap();
@@ -361,6 +363,7 @@ impl Room {
             name: format!("BOT {id}"),
             slot: id,
             bot: true,
+            difficulty: diff as u8,
         };
         self.broadcast(&ServerMsg::PlayerJoined { meta: meta.clone() });
         let spawn = self.random_spawn();
@@ -388,8 +391,8 @@ impl Room {
                 bot: true,
             },
         );
-        self.bots.insert(id, crate::bot::BotBrain::new(id));
-        tracing::info!("room {}: bot {id} added", self.code);
+        self.bots.insert(id, crate::bot::BotBrain::new(id, diff));
+        tracing::info!("room {}: bot {id} added ({})", self.code, diff.label());
     }
 
     fn handle_remove_bot(&mut self, id: PlayerId) {
@@ -446,9 +449,9 @@ impl Room {
                     let _ = p.tx.send(encode(&ServerMsg::Pong { t }));
                 }
             }
-            ClientMsg::AddBot => {
+            ClientMsg::AddBot { difficulty } => {
                 if Some(id) == self.host() && matches!(self.phase, RoomPhase::Lobby) {
-                    self.handle_add_bot();
+                    self.handle_add_bot(difficulty);
                 }
             }
             ClientMsg::RemoveBot { id: bot_id } => {
@@ -1058,7 +1061,7 @@ mod bot_tests {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap(); // id 0 = host
         room.handle_join("B".into(), None).unwrap(); // id 1
-        room.handle_msg(1, ClientMsg::AddBot); // non-host
+        room.handle_msg(1, ClientMsg::AddBot { difficulty: 1 }); // non-host
         assert_eq!(room.players.len(), 2, "only the host may add bots");
     }
 
@@ -1066,7 +1069,7 @@ mod bot_tests {
     fn host_adds_bot_and_it_is_marked() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
-        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         assert_eq!(room.players.len(), 2);
         let bot = room.players.values().find(|p| p.bot).expect("a bot exists");
         assert!(bot.meta.bot);
@@ -1076,11 +1079,26 @@ mod bot_tests {
     }
 
     #[test]
+    fn add_bot_stores_difficulty() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 3 });
+        let bot = room.players.values().find(|p| p.bot).expect("a bot exists");
+        assert_eq!(bot.meta.difficulty, 3);
+        let brain = room.bots.values().next().unwrap();
+        assert_eq!(brain.difficulty(), crate::bot::BotDifficulty::Expert);
+        // Out-of-range wire values clamp to Expert rather than panicking.
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 200 });
+        let last = room.players.values().filter(|p| p.bot).last().unwrap();
+        assert_eq!(last.meta.difficulty, 3);
+    }
+
+    #[test]
     fn add_bot_respects_max_players() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
         for _ in 0..consts().max_players {
-            room.handle_msg(0, ClientMsg::AddBot);
+            room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         }
         assert_eq!(room.players.len(), consts().max_players as usize);
     }
@@ -1089,7 +1107,7 @@ mod bot_tests {
     fn bot_moves_toward_human_in_play() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
-        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         let bot_id = *room.bots.keys().next().unwrap();
         room.handle_msg(0, ClientMsg::StartMatch);
         for _ in 0..(consts().round_countdown_ticks + 2) {
@@ -1112,7 +1130,7 @@ mod bot_tests {
     fn solo_human_plus_bot_round_ends_when_human_dies() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
-        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         room.handle_msg(0, ClientMsg::StartMatch);
         for _ in 0..(consts().round_countdown_ticks + 2) {
             room.tick();
@@ -1135,8 +1153,8 @@ mod bot_tests {
     fn bots_despawn_when_last_human_leaves() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
-        room.handle_msg(0, ClientMsg::AddBot);
-        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         assert_eq!(room.bots.len(), 2);
         // Human leaves the lobby (removed immediately), then a tick sweeps bots.
         room.handle_leave(0);
