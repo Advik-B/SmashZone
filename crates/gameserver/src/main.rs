@@ -3,7 +3,7 @@ mod net;
 mod room;
 
 use axum::extract::State;
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, post};
 use axum::{Json, Router};
@@ -42,7 +42,11 @@ async fn serve_static(uri: Uri) -> Response {
             )
                 .into_response()
         }
-        None => (StatusCode::NOT_FOUND, "no embedded web client in this build").into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            "no embedded web client in this build",
+        )
+            .into_response(),
     }
 }
 

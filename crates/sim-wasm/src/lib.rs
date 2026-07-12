@@ -4,8 +4,8 @@
 
 use protocol::{ClientMsg, InputMsg, Phase, ServerMsg, SnapshotMsg};
 use serde::Serialize;
-use sim::types::{CharSnapshot, PlayerInput, SimEvent};
 use sim::GameSim;
+use sim::types::{CharSnapshot, PlayerInput, SimEvent};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
@@ -24,6 +24,7 @@ struct JsPlayerMeta {
     name: String,
     slot: u8,
     bot: bool,
+    difficulty: u8,
 }
 
 #[derive(Serialize)]
@@ -70,11 +71,25 @@ struct JsScore {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 enum JsPhase {
-    Lobby { host: u8 },
-    Countdown { round: u8, start_tick: u32 },
-    Playing { round: u8, round_start_tick: u32 },
-    RoundEnd { winner: Option<u8>, scores: Vec<JsScore> },
-    MatchEnd { winner: u8, scores: Vec<JsScore> },
+    Lobby {
+        host: u8,
+    },
+    Countdown {
+        round: u8,
+        start_tick: u32,
+    },
+    Playing {
+        round: u8,
+        round_start_tick: u32,
+    },
+    RoundEnd {
+        winner: Option<u8>,
+        scores: Vec<JsScore>,
+    },
+    MatchEnd {
+        winner: u8,
+        scores: Vec<JsScore>,
+    },
 }
 
 impl From<&Phase> for JsPhase {
@@ -94,11 +109,23 @@ impl From<&Phase> for JsPhase {
             },
             Phase::RoundEnd { winner, scores } => JsPhase::RoundEnd {
                 winner: *winner,
-                scores: scores.iter().map(|(id, wins)| JsScore { id: *id, wins: *wins }).collect(),
+                scores: scores
+                    .iter()
+                    .map(|(id, wins)| JsScore {
+                        id: *id,
+                        wins: *wins,
+                    })
+                    .collect(),
             },
             Phase::MatchEnd { winner, scores } => JsPhase::MatchEnd {
                 winner: *winner,
-                scores: scores.iter().map(|(id, wins)| JsScore { id: *id, wins: *wins }).collect(),
+                scores: scores
+                    .iter()
+                    .map(|(id, wins)| JsScore {
+                        id: *id,
+                        wins: *wins,
+                    })
+                    .collect(),
             },
         }
     }
@@ -227,6 +254,7 @@ enum JsServerMsg {
         name: String,
         slot: u8,
         bot: bool,
+        difficulty: u8,
     },
     PlayerLeft {
         id: u8,
@@ -338,6 +366,7 @@ pub fn decode_server_msg(bytes: &[u8]) -> JsValue {
                     name: m.name.clone(),
                     slot: m.slot,
                     bot: m.bot,
+                    difficulty: m.difficulty,
                 })
                 .collect(),
             phase: phase.into(),
@@ -349,6 +378,7 @@ pub fn decode_server_msg(bytes: &[u8]) -> JsValue {
             name: meta.name.clone(),
             slot: meta.slot,
             bot: meta.bot,
+            difficulty: meta.difficulty,
         },
         ServerMsg::PlayerLeft { id } => JsServerMsg::PlayerLeft { id: *id },
         ServerMsg::PhaseChange { phase, tick } => JsServerMsg::PhaseChange {
@@ -391,8 +421,8 @@ pub fn encode_ping(t: u32) -> Vec<u8> {
 }
 
 #[wasm_bindgen]
-pub fn encode_add_bot() -> Vec<u8> {
-    protocol::encode(&ClientMsg::AddBot)
+pub fn encode_add_bot(difficulty: u8) -> Vec<u8> {
+    protocol::encode(&ClientMsg::AddBot { difficulty })
 }
 
 #[wasm_bindgen]
@@ -452,7 +482,13 @@ impl ClientSim {
     pub fn local_kin(&self) -> Vec<f32> {
         match self.sim.snapshot(self.local) {
             Some(s) => vec![
-                s.pos[0], s.pos[1], s.pos[2], s.vel[0], s.vel[1], s.vel[2], s.state.facing,
+                s.pos[0],
+                s.pos[1],
+                s.pos[2],
+                s.vel[0],
+                s.vel[1],
+                s.vel[2],
+                s.state.facing,
             ],
             None => vec![],
         }

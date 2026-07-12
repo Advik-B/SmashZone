@@ -45,7 +45,8 @@ impl Tile {
             return c.shrink_start_ticks
                 + (c.arena_half_tiles as u32 + 1) * c.shrink_ring_interval_ticks;
         }
-        c.shrink_start_ticks + (c.arena_half_tiles - self.ring()) as u32 * c.shrink_ring_interval_ticks
+        c.shrink_start_ticks
+            + (c.arena_half_tiles - self.ring()) as u32 * c.shrink_ring_interval_ticks
     }
 
     fn fall_tick(&self) -> u32 {
@@ -97,8 +98,7 @@ impl Arena {
                             island: true,
                             collider: None,
                         };
-                        tile.collider =
-                            Some(Self::make_collider(&tile, body, bodies, colliders));
+                        tile.collider = Some(Self::make_collider(&tile, body, bodies, colliders));
                         tiles.push(tile);
                     }
                 }

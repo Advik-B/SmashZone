@@ -4,10 +4,10 @@
 //! arena plus kinematic proxies of remote players.
 
 use crate::arena::{Arena, TileState};
-use crate::character::{self, attack_phase, facing_dir, AttackPhase};
+use crate::character::{self, AttackPhase, attack_phase, facing_dir};
 use crate::constants::{consts, dt};
 use crate::types::{
-    powerup, AnimState, AttackKind, CharSnapshot, CharState, PlayerId, PlayerInput, SimEvent,
+    AnimState, AttackKind, CharSnapshot, CharState, PlayerId, PlayerInput, SimEvent, powerup,
 };
 use rapier3d::prelude::*;
 use std::collections::BTreeMap;
@@ -102,7 +102,9 @@ impl GameSim {
         let builder = if proxy {
             RigidBodyBuilder::kinematic_position_based()
         } else {
-            RigidBodyBuilder::dynamic().lock_rotations().ccd_enabled(true)
+            RigidBodyBuilder::dynamic()
+                .lock_rotations()
+                .ccd_enabled(true)
         };
         let body = self.bodies.insert(
             builder
@@ -178,7 +180,8 @@ impl GameSim {
     pub fn set_proxy_state(&mut self, id: PlayerId, pos: [f32; 3], yaw: f32) {
         if let Some(p) = self.players.get_mut(&id) {
             p.state.facing = yaw;
-            self.bodies[p.body].set_next_kinematic_translation(vector![pos[0], pos[1], pos[2]].into());
+            self.bodies[p.body]
+                .set_next_kinematic_translation(vector![pos[0], pos[1], pos[2]].into());
         }
     }
 
@@ -264,8 +267,7 @@ impl GameSim {
             imp_mult *= c.anchor_mult;
         }
         let damage = (base_damage as f32 * dmg_mult).round() as u16;
-        let scale =
-            (1.0 + (t.damage + damage) as f32 * c.launch_scale_per_damage) * imp_mult;
+        let scale = (1.0 + (t.damage + damage) as f32 * c.launch_scale_per_damage) * imp_mult;
         if dir.norm() < 0.01 {
             dir = vector![0.0, 1.0, 0.0];
         }
@@ -392,13 +394,24 @@ impl GameSim {
                     // AirLight uses reach 0 → a sphere centered on the attacker
                     // (a quick 360° spin), faster and weaker than a grounded light.
                     let (reach, radius, impulse, damage) = match kind {
-                        AttackKind::Heavy => {
-                            (c.heavy_reach, c.heavy_hit_radius, c.heavy_impulse, c.heavy_damage)
-                        }
-                        AttackKind::AirLight => {
-                            (0.0, c.air_light_hit_radius, c.air_light_impulse, c.air_light_damage)
-                        }
-                        _ => (c.light_reach, c.light_hit_radius, c.light_impulse, c.light_damage),
+                        AttackKind::Heavy => (
+                            c.heavy_reach,
+                            c.heavy_hit_radius,
+                            c.heavy_impulse,
+                            c.heavy_damage,
+                        ),
+                        AttackKind::AirLight => (
+                            0.0,
+                            c.air_light_hit_radius,
+                            c.air_light_impulse,
+                            c.air_light_damage,
+                        ),
+                        _ => (
+                            c.light_reach,
+                            c.light_hit_radius,
+                            c.light_impulse,
+                            c.light_damage,
+                        ),
                     };
                     let fwd = facing_dir(p.state.facing);
                     let origin = my_pos + fwd * reach;
@@ -424,7 +437,9 @@ impl GameSim {
                         if tid == id || p.state.attack.hit_mask & (1 << tid) != 0 {
                             continue;
                         }
-                        let Some(t) = self.players.get(&tid) else { continue };
+                        let Some(t) = self.players.get(&tid) else {
+                            continue;
+                        };
                         if !t.alive || t.proxy {
                             continue;
                         }
@@ -471,7 +486,9 @@ impl GameSim {
                         if tid == id {
                             continue;
                         }
-                        let Some(t) = self.players.get(&tid) else { continue };
+                        let Some(t) = self.players.get(&tid) else {
+                            continue;
+                        };
                         if !t.alive || t.proxy {
                             continue;
                         }
@@ -655,11 +672,7 @@ impl GameSim {
                         continue;
                     }
                     let pp = self.bodies[pl.body].translation();
-                    let d = vector![
-                        pp.x - pk.pos[0],
-                        pp.y - pk.pos[1],
-                        pp.z - pk.pos[2]
-                    ];
+                    let d = vector![pp.x - pk.pos[0], pp.y - pk.pos[1], pp.z - pk.pos[2]];
                     if d.norm() <= c.pickup_radius {
                         taken.push((i, pid));
                         continue 'pickups;
@@ -755,7 +768,7 @@ impl GameSim {
         }
         match (st.attack.kind, attack_phase(st)) {
             (AttackKind::Light | AttackKind::AirLight, AttackPhase::Windup) => {
-                return AnimState::WindupLight
+                return AnimState::WindupLight;
             }
             (AttackKind::Light | AttackKind::AirLight, _) => return AnimState::SwingLight,
             (AttackKind::Heavy, AttackPhase::Windup) => return AnimState::WindupHeavy,
@@ -786,11 +799,7 @@ impl GameSim {
     }
 
     pub fn tile_centers(&self) -> Vec<f32> {
-        self.arena
-            .tiles
-            .iter()
-            .flat_map(|t| t.center())
-            .collect()
+        self.arena.tiles.iter().flat_map(|t| t.center()).collect()
     }
 
     /// Evenly spaced spawn points on a circle.
@@ -906,7 +915,11 @@ mod tests {
         }
         assert!(hit, "light attack should connect");
         let s = sim.snapshot(1).unwrap();
-        assert!(s.vel[2] > 1.0, "target should fly away in +Z, vz = {}", s.vel[2]);
+        assert!(
+            s.vel[2] > 1.0,
+            "target should fly away in +Z, vz = {}",
+            s.vel[2]
+        );
         assert!(s.damage > 0);
         assert!(s.state.launched > 0);
     }
@@ -922,7 +935,10 @@ mod tests {
         );
         let states = sim.tile_states();
         assert!(states.iter().any(|&s| s == 2));
-        assert!(states.iter().any(|&s| s == 0), "center should still be solid");
+        assert!(
+            states.iter().any(|&s| s == 0),
+            "center should still be solid"
+        );
         sim.arena_reset();
         assert!(sim.tile_states().iter().all(|&s| s == 0));
     }
@@ -972,14 +988,26 @@ mod shrink_history_repro {
         let mut p1_died = false;
         for t in 0..900u32 {
             sim.arena_apply_until(t);
-            let mash = if t > 60 && t % 4 < 2 { buttons::LIGHT } else { 0 };
+            let mash = if t > 60 && t % 4 < 2 {
+                buttons::LIGHT
+            } else {
+                0
+            };
             inputs.insert(
                 0,
-                PlayerInput { move_x: 0.0, move_z: -1.0, yaw: pi, buttons: mash },
+                PlayerInput {
+                    move_x: 0.0,
+                    move_z: -1.0,
+                    yaw: pi,
+                    buttons: mash,
+                },
             );
             inputs.insert(1, PlayerInput::default());
             let evs = sim.step(&inputs);
-            if evs.iter().any(|e| matches!(e, SimEvent::Death { player: 1, .. })) {
+            if evs
+                .iter()
+                .any(|e| matches!(e, SimEvent::Death { player: 1, .. }))
+            {
                 p1_died = true;
                 break;
             }
@@ -1075,7 +1103,11 @@ mod weapons_tests {
         sim.add_player(0, false, [c0[0], 1.05, c0[2]]);
         settle(&mut sim, 60);
         let s = sim.snapshot(0).unwrap();
-        assert!(s.alive && s.pos[1] > 0.5, "should stand on island, y = {}", s.pos[1]);
+        assert!(
+            s.alive && s.pos[1] > 0.5,
+            "should stand on island, y = {}",
+            s.pos[1]
+        );
     }
 
     #[test]
@@ -1113,13 +1145,23 @@ mod weapons_tests {
                 give(&mut sim, 1, target_pu);
             }
             let mut inputs = BTreeMap::new();
-            inputs.insert(0, PlayerInput { yaw: 0.0, buttons: buttons::LIGHT, ..Default::default() });
+            inputs.insert(
+                0,
+                PlayerInput {
+                    yaw: 0.0,
+                    buttons: buttons::LIGHT,
+                    ..Default::default()
+                },
+            );
             for t in 0..30 {
                 let evs = sim.step(&inputs);
                 if t == 0 {
                     inputs.insert(0, PlayerInput::default());
                 }
-                if evs.iter().any(|e| matches!(e, SimEvent::Hit { target: 1, .. })) {
+                if evs
+                    .iter()
+                    .any(|e| matches!(e, SimEvent::Hit { target: 1, .. }))
+                {
                     let s = sim.snapshot(1).unwrap();
                     return vector![s.vel[0], s.vel[1], s.vel[2]].norm();
                 }
@@ -1141,7 +1183,14 @@ mod weapons_tests {
         settle(&mut sim, 30);
         give(&mut sim, 0, powerup::GUN);
         let mut inputs = BTreeMap::new();
-        inputs.insert(0, PlayerInput { yaw: 0.0, buttons: buttons::LIGHT, ..Default::default() });
+        inputs.insert(
+            0,
+            PlayerInput {
+                yaw: 0.0,
+                buttons: buttons::LIGHT,
+                ..Default::default()
+            },
+        );
         let mut fired = false;
         let mut hit = false;
         for t in 0..40 {
@@ -1176,7 +1225,14 @@ mod weapons_tests {
         settle(&mut sim, 30);
         give(&mut sim, 0, powerup::BOMB);
         let mut inputs = BTreeMap::new();
-        inputs.insert(0, PlayerInput { yaw: 0.0, buttons: buttons::LIGHT, ..Default::default() });
+        inputs.insert(
+            0,
+            PlayerInput {
+                yaw: 0.0,
+                buttons: buttons::LIGHT,
+                ..Default::default()
+            },
+        );
         let mut exploded = false;
         let mut hit = false;
         for t in 0..200 {
@@ -1260,7 +1316,12 @@ mod depth_tests {
     use crate::types::buttons;
 
     fn inp(mx: f32, mz: f32, yaw: f32, btn: u8) -> PlayerInput {
-        PlayerInput { move_x: mx, move_z: mz, yaw, buttons: btn }
+        PlayerInput {
+            move_x: mx,
+            move_z: mz,
+            yaw,
+            buttons: btn,
+        }
     }
 
     /// Spawn invulnerability blocks incoming hits, then expires.
@@ -1281,7 +1342,11 @@ mod depth_tests {
                 inputs.insert(0, inp(0.0, 0.0, 0.0, 0));
             }
         }
-        assert_eq!(sim.snapshot(1).unwrap().damage, 0, "invuln should block the hit");
+        assert_eq!(
+            sim.snapshot(1).unwrap().damage,
+            0,
+            "invuln should block the hit"
+        );
 
         // Wait out the invuln window, then a fresh swing lands.
         let grace = consts().spawn_invuln_ticks as u32;
@@ -1297,7 +1362,10 @@ mod depth_tests {
             if t == 0 {
                 inputs.insert(0, inp(0.0, 0.0, 0.0, 0));
             }
-            if evs.iter().any(|e| matches!(e, SimEvent::Hit { target: 1, .. })) {
+            if evs
+                .iter()
+                .any(|e| matches!(e, SimEvent::Hit { target: 1, .. }))
+            {
                 hit = true;
             }
         }
@@ -1333,9 +1401,15 @@ mod depth_tests {
             for t in 0..30u32 {
                 let mut inputs = BTreeMap::new();
                 // Attacker slams (heavy while airborne) on the first tick.
-                inputs.insert(0, inp(0.0, 0.0, 0.0, if t == 0 { buttons::HEAVY } else { 0 }));
+                inputs.insert(
+                    0,
+                    inp(0.0, 0.0, 0.0, if t == 0 { buttons::HEAVY } else { 0 }),
+                );
                 if target_dashes {
-                    inputs.insert(1, inp(1.0, 0.0, 0.0, if t == 0 { buttons::DASH } else { 0 }));
+                    inputs.insert(
+                        1,
+                        inp(1.0, 0.0, 0.0, if t == 0 { buttons::DASH } else { 0 }),
+                    );
                 }
                 for ev in sim.step(&inputs) {
                     if matches!(ev, SimEvent::Hit { target: 1, .. }) {
@@ -1345,8 +1419,14 @@ mod depth_tests {
             }
             hit
         };
-        assert!(hit_landed(false), "control: stationary target should be slammed");
-        assert!(!hit_landed(true), "dashing target should be intangible to the slam");
+        assert!(
+            hit_landed(false),
+            "control: stationary target should be slammed"
+        );
+        assert!(
+            !hit_landed(true),
+            "dashing target should be intangible to the slam"
+        );
     }
 
     /// Directional influence bends a launch trajectory without neutering it.
@@ -1366,7 +1446,10 @@ mod depth_tests {
                 sim.step(&inputs);
                 inputs.insert(0, inp(0.0, 0.0, 0.0, 0));
             }
-            assert!(sim.snapshot(1).unwrap().state.launched > 0, "target should be launched");
+            assert!(
+                sim.snapshot(1).unwrap().state.launched > 0,
+                "target should be launched"
+            );
             // Hold DI sideways while launched.
             let mut inputs = BTreeMap::new();
             inputs.insert(1, inp(di, 0.0, 0.0, 0));
@@ -1382,7 +1465,10 @@ mod depth_tests {
             "DI should push the launch sideways (dx = {})",
             right.pos[0] - none.pos[0]
         );
-        assert!(none.pos[2] > 1.4, "launch itself should still carry the target in +Z");
+        assert!(
+            none.pos[2] > 1.4,
+            "launch itself should still carry the target in +Z"
+        );
     }
 
     /// Aerial LIGHT is a 360° spin: it hits a target behind the attacker,
@@ -1417,8 +1503,14 @@ mod depth_tests {
             let _ = inputs;
             hit
         };
-        assert!(connects(true), "air light should hit a target behind the attacker");
-        assert!(!connects(false), "grounded light should miss a target behind");
+        assert!(
+            connects(true),
+            "air light should hit a target behind the attacker"
+        );
+        assert!(
+            !connects(false),
+            "grounded light should miss a target behind"
+        );
     }
 
     /// The new attack/DI/i-frame paths stay deterministic.

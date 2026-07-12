@@ -3,14 +3,14 @@
 
 use crate::AppState;
 use protocol::{
-    encode, ClientMsg, NetPickup, NetPlayer, NetProjectile, Phase, PlayerMeta, ServerMsg,
-    SnapshotMsg, player_flags,
+    ClientMsg, NetPickup, NetPlayer, NetProjectile, Phase, PlayerMeta, ServerMsg, SnapshotMsg,
+    encode, player_flags,
 };
 use rand::Rng;
+use sim::GameSim;
 use sim::arena::Arena;
 use sim::constants::consts;
-use sim::types::{powerup, PlayerId, PlayerInput, SimEvent};
-use sim::GameSim;
+use sim::types::{PlayerId, PlayerInput, SimEvent, powerup};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,11 +86,7 @@ fn gen_token() -> String {
 /// The client escapes names before rendering; this is defense in depth so
 /// control chars (NUL, newlines) never reach clients in the first place.
 fn sanitize_name(name: &str) -> String {
-    let clean: String = name
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(16)
-        .collect();
+    let clean: String = name.chars().filter(|c| !c.is_control()).take(16).collect();
     let clean = clean.trim();
     if clean.is_empty() {
         "Player".to_string()
@@ -101,9 +97,18 @@ fn sanitize_name(name: &str) -> String {
 
 enum RoomPhase {
     Lobby,
-    Countdown { round: u8, start_at: u32 },
-    Playing { round: u8, started_at: u32 },
-    RoundEnd { winner: Option<PlayerId>, until: u32 },
+    Countdown {
+        round: u8,
+        start_at: u32,
+    },
+    Playing {
+        round: u8,
+        started_at: u32,
+    },
+    RoundEnd {
+        winner: Option<PlayerId>,
+        until: u32,
+    },
     MatchEnd,
 }
 
@@ -123,10 +128,7 @@ struct Room {
 impl Room {
     /// Host = lowest-id human (bots can never host).
     fn host(&self) -> Option<PlayerId> {
-        self.players
-            .iter()
-            .find(|(_, p)| !p.bot)
-            .map(|(&id, _)| id)
+        self.players.iter().find(|(_, p)| !p.bot).map(|(&id, _)| id)
     }
 
     /// Count of real (non-bot) players, connected or in the reconnect window.
@@ -175,7 +177,12 @@ impl Room {
     }
 
     fn send_phase(&self) {
-        tracing::info!("room {}: phase -> {:?} at tick {}", self.code, self.phase_msg(), self.tick);
+        tracing::info!(
+            "room {}: phase -> {:?} at tick {}",
+            self.code,
+            self.phase_msg(),
+            self.tick
+        );
         self.broadcast(&ServerMsg::PhaseChange {
             phase: self.phase_msg(),
             tick: self.tick,
@@ -222,6 +229,7 @@ impl Room {
             name: sanitize_name(&name),
             slot: id,
             bot: false,
+            difficulty: 0,
         };
         // Announce to existing players first.
         self.broadcast(&ServerMsg::PlayerJoined { meta: meta.clone() });
@@ -263,7 +271,11 @@ impl Room {
         };
         let _ = tx.send(encode(&welcome));
         tracing::info!("room {}: player {id} joined", self.code);
-        Ok(JoinAck { id, epoch: 0, out_rx })
+        Ok(JoinAck {
+            id,
+            epoch: 0,
+            out_rx,
+        })
     }
 
     /// Take over an existing slot: swap in the new socket, bump the epoch, and
@@ -289,14 +301,20 @@ impl Room {
             token,
         };
         let _ = tx.send(encode(&welcome));
-        tracing::info!("room {}: player {id} reconnected (epoch {epoch})", self.code);
+        tracing::info!(
+            "room {}: player {id} reconnected (epoch {epoch})",
+            self.code
+        );
         JoinAck { id, epoch, out_rx }
     }
 
     /// True if a command's connection generation matches the live player. Stale
     /// commands from a socket that a reconnect superseded are dropped.
     fn epoch_ok(&self, id: PlayerId, epoch: u32) -> bool {
-        self.players.get(&id).map(|p| p.epoch == epoch).unwrap_or(false)
+        self.players
+            .get(&id)
+            .map(|p| p.epoch == epoch)
+            .unwrap_or(false)
     }
 
     fn handle_leave(&mut self, id: PlayerId) {
@@ -343,16 +361,20 @@ impl Room {
             if matches!(self.phase, RoomPhase::Lobby) {
                 self.send_phase();
             }
-            tracing::info!("room {}: player {id} dropped (reconnect grace elapsed)", self.code);
+            tracing::info!(
+                "room {}: player {id} dropped (reconnect grace elapsed)",
+                self.code
+            );
         }
     }
 
     /// Add a practice bot (host + lobby gated by the caller).
-    fn handle_add_bot(&mut self) {
+    fn handle_add_bot(&mut self, difficulty: u8) {
         let c = consts();
         if self.players.len() >= c.max_players as usize {
             return;
         }
+        let diff = crate::bot::BotDifficulty::from_u8(difficulty);
         let id = (0..c.max_players)
             .find(|i| !self.players.contains_key(i))
             .unwrap();
@@ -361,6 +383,7 @@ impl Room {
             name: format!("BOT {id}"),
             slot: id,
             bot: true,
+            difficulty: diff as u8,
         };
         self.broadcast(&ServerMsg::PlayerJoined { meta: meta.clone() });
         let spawn = self.random_spawn();
@@ -388,8 +411,8 @@ impl Room {
                 bot: true,
             },
         );
-        self.bots.insert(id, crate::bot::BotBrain::new(id));
-        tracing::info!("room {}: bot {id} added", self.code);
+        self.bots.insert(id, crate::bot::BotBrain::new(id, diff));
+        tracing::info!("room {}: bot {id} added ({})", self.code, diff.label());
     }
 
     fn handle_remove_bot(&mut self, id: PlayerId) {
@@ -446,9 +469,9 @@ impl Room {
                     let _ = p.tx.send(encode(&ServerMsg::Pong { t }));
                 }
             }
-            ClientMsg::AddBot => {
+            ClientMsg::AddBot { difficulty } => {
                 if Some(id) == self.host() && matches!(self.phase, RoomPhase::Lobby) {
-                    self.handle_add_bot();
+                    self.handle_add_bot(difficulty);
                 }
             }
             ClientMsg::RemoveBot { id: bot_id } => {
@@ -1058,7 +1081,7 @@ mod bot_tests {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap(); // id 0 = host
         room.handle_join("B".into(), None).unwrap(); // id 1
-        room.handle_msg(1, ClientMsg::AddBot); // non-host
+        room.handle_msg(1, ClientMsg::AddBot { difficulty: 1 }); // non-host
         assert_eq!(room.players.len(), 2, "only the host may add bots");
     }
 
@@ -1066,7 +1089,7 @@ mod bot_tests {
     fn host_adds_bot_and_it_is_marked() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
-        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         assert_eq!(room.players.len(), 2);
         let bot = room.players.values().find(|p| p.bot).expect("a bot exists");
         assert!(bot.meta.bot);
@@ -1076,11 +1099,29 @@ mod bot_tests {
     }
 
     #[test]
+    fn add_bot_stores_difficulty() {
+        let mut room = test_room();
+        room.handle_join("A".into(), None).unwrap();
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 3 });
+        let bot = room.players.values().find(|p| p.bot).expect("a bot exists");
+        assert_eq!(bot.meta.difficulty, 3);
+        let brain = room.bots.values().next().unwrap();
+        assert_eq!(brain.difficulty(), crate::bot::BotDifficulty::Expert);
+        // Out-of-range wire values clamp to the top tier rather than panicking.
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 200 });
+        let last = room.players.values().filter(|p| p.bot).last().unwrap();
+        assert_eq!(
+            last.meta.difficulty,
+            crate::bot::BotDifficulty::Impossible as u8
+        );
+    }
+
+    #[test]
     fn add_bot_respects_max_players() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
         for _ in 0..consts().max_players {
-            room.handle_msg(0, ClientMsg::AddBot);
+            room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         }
         assert_eq!(room.players.len(), consts().max_players as usize);
     }
@@ -1089,7 +1130,7 @@ mod bot_tests {
     fn bot_moves_toward_human_in_play() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
-        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         let bot_id = *room.bots.keys().next().unwrap();
         room.handle_msg(0, ClientMsg::StartMatch);
         for _ in 0..(consts().round_countdown_ticks + 2) {
@@ -1112,7 +1153,7 @@ mod bot_tests {
     fn solo_human_plus_bot_round_ends_when_human_dies() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
-        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         room.handle_msg(0, ClientMsg::StartMatch);
         for _ in 0..(consts().round_countdown_ticks + 2) {
             room.tick();
@@ -1135,15 +1176,18 @@ mod bot_tests {
     fn bots_despawn_when_last_human_leaves() {
         let mut room = test_room();
         room.handle_join("A".into(), None).unwrap();
-        room.handle_msg(0, ClientMsg::AddBot);
-        room.handle_msg(0, ClientMsg::AddBot);
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
+        room.handle_msg(0, ClientMsg::AddBot { difficulty: 1 });
         assert_eq!(room.bots.len(), 2);
         // Human leaves the lobby (removed immediately), then a tick sweeps bots.
         room.handle_leave(0);
         room.tick();
         assert_eq!(room.humans(), 0);
         assert!(room.bots.is_empty(), "bots should be despawned");
-        assert!(room.players.is_empty(), "room should be empty for idle cleanup");
+        assert!(
+            room.players.is_empty(),
+            "room should be empty for idle cleanup"
+        );
     }
 }
 
@@ -1171,7 +1215,13 @@ mod stale_input_tests {
         // Send one forward input, then go silent.
         room.handle_msg(
             0,
-            ClientMsg::Input(InputMsg { seq: 1, move_x: 0, move_z: 127, yaw: 0, buttons: 0 }),
+            ClientMsg::Input(InputMsg {
+                seq: 1,
+                move_x: 0,
+                move_z: 127,
+                yaw: 0,
+                buttons: 0,
+            }),
         );
         // The held input applies for a while, then must be zeroed.
         for _ in 0..(INPUT_STALE_TICKS as u32 + 60) {

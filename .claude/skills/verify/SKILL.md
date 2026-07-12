@@ -28,7 +28,9 @@ not match the preinstalled browser build).
   `localStorage.setItem("sz-input-mode", "keyboard")` (also `sz-quality` for
   presets).
 - Menu: fill `#m-name`, click `#m-create` (or `#m-code` + `#m-join`); lobby:
-  `#h-addbot`, `#h-start`; room code parseable from `.hud-room` text.
+  `#h-addbot` (adds a MEDIUM bot; the other tiers are
+  `.bot-add[data-diff="0|2|3"]` for EASY/HARD/EXPERT), `#h-start`; room code
+  parseable from `.hud-room` text.
 - Dev hooks: `window.__gc` (GameClient) and `window.__input` (InputManager).
   TS-private fields are reachable: `__gc.phase.type`, `__gc.myId`,
   `__gc.metas`, `__gc.aliveIds`, `__gc.renderer.playerPos(id)`.

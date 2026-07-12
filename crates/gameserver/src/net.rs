@@ -1,8 +1,8 @@
 //! WebSocket plumbing: one reader + one writer task per connection,
 //! bridged to the room task via channels.
 
-use crate::room::{JoinAck, RoomCmd};
 use crate::AppState;
+use crate::room::{JoinAck, RoomCmd};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
@@ -66,7 +66,11 @@ async fn handle_socket(socket: WebSocket, q: WsQuery, state: Arc<AppState>) {
         let _ = send_error(socket, "room is closed").await;
         return;
     }
-    let JoinAck { id, epoch, mut out_rx } = match ack_rx.await {
+    let JoinAck {
+        id,
+        epoch,
+        mut out_rx,
+    } = match ack_rx.await {
         Ok(Ok(ack)) => ack,
         Ok(Err(e)) => {
             let _ = send_error(socket, &e).await;
@@ -104,7 +108,14 @@ async fn handle_socket(socket: WebSocket, q: WsQuery, state: Arc<AppState>) {
         match msg {
             Message::Binary(bytes) => {
                 if let Some(cmsg) = protocol::decode::<protocol::ClientMsg>(&bytes) {
-                    if room_tx.send(RoomCmd::Msg { id, epoch, msg: cmsg }).is_err() {
+                    if room_tx
+                        .send(RoomCmd::Msg {
+                            id,
+                            epoch,
+                            msg: cmsg,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
