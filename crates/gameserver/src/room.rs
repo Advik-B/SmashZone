@@ -3,8 +3,8 @@
 
 use crate::AppState;
 use protocol::{
-    encode, ClientMsg, NetPickup, NetPlayer, NetProjectile, Phase, PlayerMeta, ServerMsg,
-    SnapshotMsg, player_flags,
+    encode, player_flags, ClientMsg, NetPickup, NetPlayer, NetProjectile, Phase, PlayerMeta,
+    ServerMsg, SnapshotMsg,
 };
 use rand::Rng;
 use sim::arena::Arena;
@@ -86,11 +86,7 @@ fn gen_token() -> String {
 /// The client escapes names before rendering; this is defense in depth so
 /// control chars (NUL, newlines) never reach clients in the first place.
 fn sanitize_name(name: &str) -> String {
-    let clean: String = name
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(16)
-        .collect();
+    let clean: String = name.chars().filter(|c| !c.is_control()).take(16).collect();
     let clean = clean.trim();
     if clean.is_empty() {
         "Player".to_string()
@@ -101,9 +97,18 @@ fn sanitize_name(name: &str) -> String {
 
 enum RoomPhase {
     Lobby,
-    Countdown { round: u8, start_at: u32 },
-    Playing { round: u8, started_at: u32 },
-    RoundEnd { winner: Option<PlayerId>, until: u32 },
+    Countdown {
+        round: u8,
+        start_at: u32,
+    },
+    Playing {
+        round: u8,
+        started_at: u32,
+    },
+    RoundEnd {
+        winner: Option<PlayerId>,
+        until: u32,
+    },
     MatchEnd,
 }
 
@@ -123,10 +128,7 @@ struct Room {
 impl Room {
     /// Host = lowest-id human (bots can never host).
     fn host(&self) -> Option<PlayerId> {
-        self.players
-            .iter()
-            .find(|(_, p)| !p.bot)
-            .map(|(&id, _)| id)
+        self.players.iter().find(|(_, p)| !p.bot).map(|(&id, _)| id)
     }
 
     /// Count of real (non-bot) players, connected or in the reconnect window.
@@ -175,7 +177,12 @@ impl Room {
     }
 
     fn send_phase(&self) {
-        tracing::info!("room {}: phase -> {:?} at tick {}", self.code, self.phase_msg(), self.tick);
+        tracing::info!(
+            "room {}: phase -> {:?} at tick {}",
+            self.code,
+            self.phase_msg(),
+            self.tick
+        );
         self.broadcast(&ServerMsg::PhaseChange {
             phase: self.phase_msg(),
             tick: self.tick,
@@ -264,7 +271,11 @@ impl Room {
         };
         let _ = tx.send(encode(&welcome));
         tracing::info!("room {}: player {id} joined", self.code);
-        Ok(JoinAck { id, epoch: 0, out_rx })
+        Ok(JoinAck {
+            id,
+            epoch: 0,
+            out_rx,
+        })
     }
 
     /// Take over an existing slot: swap in the new socket, bump the epoch, and
@@ -290,14 +301,20 @@ impl Room {
             token,
         };
         let _ = tx.send(encode(&welcome));
-        tracing::info!("room {}: player {id} reconnected (epoch {epoch})", self.code);
+        tracing::info!(
+            "room {}: player {id} reconnected (epoch {epoch})",
+            self.code
+        );
         JoinAck { id, epoch, out_rx }
     }
 
     /// True if a command's connection generation matches the live player. Stale
     /// commands from a socket that a reconnect superseded are dropped.
     fn epoch_ok(&self, id: PlayerId, epoch: u32) -> bool {
-        self.players.get(&id).map(|p| p.epoch == epoch).unwrap_or(false)
+        self.players
+            .get(&id)
+            .map(|p| p.epoch == epoch)
+            .unwrap_or(false)
     }
 
     fn handle_leave(&mut self, id: PlayerId) {
@@ -344,7 +361,10 @@ impl Room {
             if matches!(self.phase, RoomPhase::Lobby) {
                 self.send_phase();
             }
-            tracing::info!("room {}: player {id} dropped (reconnect grace elapsed)", self.code);
+            tracing::info!(
+                "room {}: player {id} dropped (reconnect grace elapsed)",
+                self.code
+            );
         }
     }
 
@@ -1090,7 +1110,10 @@ mod bot_tests {
         // Out-of-range wire values clamp to the top tier rather than panicking.
         room.handle_msg(0, ClientMsg::AddBot { difficulty: 200 });
         let last = room.players.values().filter(|p| p.bot).last().unwrap();
-        assert_eq!(last.meta.difficulty, crate::bot::BotDifficulty::Impossible as u8);
+        assert_eq!(
+            last.meta.difficulty,
+            crate::bot::BotDifficulty::Impossible as u8
+        );
     }
 
     #[test]
@@ -1161,7 +1184,10 @@ mod bot_tests {
         room.tick();
         assert_eq!(room.humans(), 0);
         assert!(room.bots.is_empty(), "bots should be despawned");
-        assert!(room.players.is_empty(), "room should be empty for idle cleanup");
+        assert!(
+            room.players.is_empty(),
+            "room should be empty for idle cleanup"
+        );
     }
 }
 
@@ -1189,7 +1215,13 @@ mod stale_input_tests {
         // Send one forward input, then go silent.
         room.handle_msg(
             0,
-            ClientMsg::Input(InputMsg { seq: 1, move_x: 0, move_z: 127, yaw: 0, buttons: 0 }),
+            ClientMsg::Input(InputMsg {
+                seq: 1,
+                move_x: 0,
+                move_z: 127,
+                yaw: 0,
+                buttons: 0,
+            }),
         );
         // The held input applies for a while, then must be zeroed.
         for _ in 0..(INPUT_STALE_TICKS as u32 + 60) {

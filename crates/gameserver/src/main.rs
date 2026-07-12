@@ -42,7 +42,11 @@ async fn serve_static(uri: Uri) -> Response {
             )
                 .into_response()
         }
-        None => (StatusCode::NOT_FOUND, "no embedded web client in this build").into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            "no embedded web client in this build",
+        )
+            .into_response(),
     }
 }
 
