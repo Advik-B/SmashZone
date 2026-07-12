@@ -34,11 +34,17 @@ pub enum ClientMsg {
     Input(InputMsg),
     StartMatch,
     Rematch,
-    Ping { t: u32 },
+    Ping {
+        t: u32,
+    },
     /// Host-only, lobby-only: add / remove a practice bot. `difficulty` is
     /// 0=Easy..3=Expert; the server clamps out-of-range values.
-    AddBot { difficulty: u8 },
-    RemoveBot { id: PlayerId },
+    AddBot {
+        difficulty: u8,
+    },
+    RemoveBot {
+        id: PlayerId,
+    },
 }
 
 /// Quantized remote-player state inside a snapshot.
@@ -172,7 +178,9 @@ pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Option<T> {
 // ---- Quantization helpers (used by server encode and wasm decode) ----
 
 pub fn quant_pos(v: f32) -> i16 {
-    (v * consts().pos_quant_scale).round().clamp(-32768.0, 32767.0) as i16
+    (v * consts().pos_quant_scale)
+        .round()
+        .clamp(-32768.0, 32767.0) as i16
 }
 
 pub fn dequant_pos(v: i16) -> f32 {
@@ -180,7 +188,9 @@ pub fn dequant_pos(v: i16) -> f32 {
 }
 
 pub fn quant_vel(v: f32) -> i16 {
-    (v * consts().vel_quant_scale).round().clamp(-32768.0, 32767.0) as i16
+    (v * consts().vel_quant_scale)
+        .round()
+        .clamp(-32768.0, 32767.0) as i16
 }
 
 pub fn dequant_vel(v: i16) -> f32 {

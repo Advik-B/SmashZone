@@ -3,14 +3,14 @@
 
 use crate::AppState;
 use protocol::{
-    encode, player_flags, ClientMsg, NetPickup, NetPlayer, NetProjectile, Phase, PlayerMeta,
-    ServerMsg, SnapshotMsg,
+    ClientMsg, NetPickup, NetPlayer, NetProjectile, Phase, PlayerMeta, ServerMsg, SnapshotMsg,
+    encode, player_flags,
 };
 use rand::Rng;
+use sim::GameSim;
 use sim::arena::Arena;
 use sim::constants::consts;
-use sim::types::{powerup, PlayerId, PlayerInput, SimEvent};
-use sim::GameSim;
+use sim::types::{PlayerId, PlayerInput, SimEvent, powerup};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;

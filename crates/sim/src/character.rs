@@ -2,8 +2,8 @@
 //! browser (WASM) for client-side prediction. Everything here must be a pure
 //! function of (body, state, input, constants) — no RNG, no clocks.
 
-use crate::constants::{consts, dt, Constants};
-use crate::types::{buttons, powerup, AttackKind, CharState, PlayerInput};
+use crate::constants::{Constants, consts, dt};
+use crate::types::{AttackKind, CharState, PlayerInput, buttons, powerup};
 use rapier3d::prelude::*;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

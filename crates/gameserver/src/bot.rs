@@ -9,11 +9,11 @@
 //! loop, so everything here must stay allocation-free and O(players + tiles
 //! + projectiles) per tick.
 
-use sim::arena::TileState;
-use sim::character::{attack_phase, AttackPhase};
-use sim::constants::{consts, dt};
-use sim::types::{buttons, powerup, AttackKind, CharSnapshot, PlayerId, PlayerInput};
 use sim::GameSim;
+use sim::arena::TileState;
+use sim::character::{AttackPhase, attack_phase};
+use sim::constants::{consts, dt};
+use sim::types::{AttackKind, CharSnapshot, PlayerId, PlayerInput, buttons, powerup};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]

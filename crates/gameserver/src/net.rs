@@ -1,8 +1,8 @@
 //! WebSocket plumbing: one reader + one writer task per connection,
 //! bridged to the room task via channels.
 
-use crate::room::{JoinAck, RoomCmd};
 use crate::AppState;
+use crate::room::{JoinAck, RoomCmd};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;

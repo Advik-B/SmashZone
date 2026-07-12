@@ -4,8 +4,8 @@
 
 use protocol::{ClientMsg, InputMsg, Phase, ServerMsg, SnapshotMsg};
 use serde::Serialize;
-use sim::types::{CharSnapshot, PlayerInput, SimEvent};
 use sim::GameSim;
+use sim::types::{CharSnapshot, PlayerInput, SimEvent};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
@@ -71,11 +71,25 @@ struct JsScore {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 enum JsPhase {
-    Lobby { host: u8 },
-    Countdown { round: u8, start_tick: u32 },
-    Playing { round: u8, round_start_tick: u32 },
-    RoundEnd { winner: Option<u8>, scores: Vec<JsScore> },
-    MatchEnd { winner: u8, scores: Vec<JsScore> },
+    Lobby {
+        host: u8,
+    },
+    Countdown {
+        round: u8,
+        start_tick: u32,
+    },
+    Playing {
+        round: u8,
+        round_start_tick: u32,
+    },
+    RoundEnd {
+        winner: Option<u8>,
+        scores: Vec<JsScore>,
+    },
+    MatchEnd {
+        winner: u8,
+        scores: Vec<JsScore>,
+    },
 }
 
 impl From<&Phase> for JsPhase {
@@ -95,11 +109,23 @@ impl From<&Phase> for JsPhase {
             },
             Phase::RoundEnd { winner, scores } => JsPhase::RoundEnd {
                 winner: *winner,
-                scores: scores.iter().map(|(id, wins)| JsScore { id: *id, wins: *wins }).collect(),
+                scores: scores
+                    .iter()
+                    .map(|(id, wins)| JsScore {
+                        id: *id,
+                        wins: *wins,
+                    })
+                    .collect(),
             },
             Phase::MatchEnd { winner, scores } => JsPhase::MatchEnd {
                 winner: *winner,
-                scores: scores.iter().map(|(id, wins)| JsScore { id: *id, wins: *wins }).collect(),
+                scores: scores
+                    .iter()
+                    .map(|(id, wins)| JsScore {
+                        id: *id,
+                        wins: *wins,
+                    })
+                    .collect(),
             },
         }
     }
@@ -456,7 +482,13 @@ impl ClientSim {
     pub fn local_kin(&self) -> Vec<f32> {
         match self.sim.snapshot(self.local) {
             Some(s) => vec![
-                s.pos[0], s.pos[1], s.pos[2], s.vel[0], s.vel[1], s.vel[2], s.state.facing,
+                s.pos[0],
+                s.pos[1],
+                s.pos[2],
+                s.vel[0],
+                s.vel[1],
+                s.vel[2],
+                s.state.facing,
             ],
             None => vec![],
         }
