@@ -17,6 +17,11 @@ RUN cd client && bun install --frozen-lockfile
 COPY client ./client
 COPY shared ./shared
 COPY --from=wasm-builder /app/client/src/wasm/pkg ./client/src/wasm/pkg
+# Stamped into replay files: postcard wire bytes are only guaranteed decodable
+# by the build that wrote them, so the viewer warns on mismatched replays.
+# Pass e.g. --build-arg BUILD_ID=$(git rev-parse --short HEAD) when deploying.
+ARG BUILD_ID=dev
+ENV BUILD_ID=$BUILD_ID
 RUN cd client && bun run build
 
 # ---- Stage 2: build the game server (embeds client/dist via build.rs) ----

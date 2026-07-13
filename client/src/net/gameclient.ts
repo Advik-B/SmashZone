@@ -328,10 +328,15 @@ export class GameClient {
   }
 
   private async finalizeReplay(reason: FinalizeReason) {
-    const fin = await this.recorder.finalize(reason);
-    if (fin && !this.destroyed) {
-      this.lastReplay = fin;
-      this.refreshOverlay(); // surfaces the "watch replay" button
+    try {
+      const fin = await this.recorder.finalize(reason);
+      if (fin && !this.destroyed) {
+        this.lastReplay = fin;
+        this.refreshOverlay(); // surfaces the "watch replay" button
+      }
+    } catch (e) {
+      // A failed save must never take the match-end flow down with it.
+      console.warn("replay finalize failed:", e);
     }
   }
 

@@ -311,14 +311,21 @@ export class ReplayDataset {
     return out;
   }
 
-  /** The round segment containing a tick, if any. */
+  /**
+   * The round segment governing a tick: the last one that started at or
+   * before it. A round keeps governing through the round-end pause (the
+   * arena must hold its end-of-round holes, like live play) until the next
+   * round's countdown takes over.
+   */
   roundAt(tick: number): ReplayRoundInfo | null {
+    let out: ReplayRoundInfo | null = null;
     for (const r of this.rounds) {
       const start = r.countdownTick ?? r.roundStartTick;
-      if (start === null || tick < start) continue;
-      if (r.endTick === null || tick <= r.endTick) return r;
+      if (start === null) continue;
+      if (start > tick) break; // rounds are chronological
+      out = r;
     }
-    return null;
+    return out;
   }
 
   /** The recorder's own camera at a tick (yaw/pitch, lerped between samples). */
