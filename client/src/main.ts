@@ -26,6 +26,7 @@ import {
 import { savedQuality, saveQuality } from "./game/quality";
 import { ReplayDataset } from "./replay/dataset";
 import { BUILD_ID } from "./replay/format";
+import { recordingEnabled, setRecordingEnabled } from "./replay/recorder";
 import { ReplayPlayer } from "./replay/player";
 import {
   ReplayLibraryUI,
@@ -111,10 +112,13 @@ async function main() {
       const est = await replayStore.storageEstimate();
       if (est && est.quota > 0) {
         const used = items.reduce((n, m) => n + m.sizeBytes, 0);
-        storageLine = `${items.length} replay${items.length === 1 ? "" : "s"} · ${(
-          used /
-          (1 << 20)
-        ).toFixed(1)} MB · newest ${replayStore.MAX_REPLAYS} unpinned are kept`;
+        const size =
+          used >= 1 << 20
+            ? `${(used / (1 << 20)).toFixed(1)} MB`
+            : `${Math.max(0, Math.round(used / 1024))} KB`;
+        storageLine = `${items.length} replay${
+          items.length === 1 ? "" : "s"
+        } · ${size} · newest ${replayStore.MAX_REPLAYS} unpinned are kept`;
       }
     } catch (e) {
       notice = notice || `replay storage unavailable: ${e instanceof Error ? e.message : e}`;
@@ -212,6 +216,8 @@ async function main() {
                 saveQuality(q);
                 renderer.applyQuality(q);
               },
+              recordReplays: recordingEnabled(),
+              onRecordReplays: (on) => setRecordingEnabled(on),
             }),
       () => void openLibrary(),
     );

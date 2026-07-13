@@ -137,6 +137,9 @@ export interface PhaseCtx {
   onRemoveBot: (id: number) => void;
   /** Present once the finished match's recording is saved (match-end panel). */
   onWatchReplay?: (() => void) | null;
+  /** Fallback when the recording exists but couldn't be persisted (quota,
+   *  private mode): offer a direct .szr download instead. */
+  onSaveReplayFile?: (() => void) | null;
 }
 
 export class UI {
@@ -297,6 +300,8 @@ export class UI {
     onMusicMuted: (m: boolean) => void;
     quality: Quality;
     onQuality: (q: Quality) => void;
+    recordReplays: boolean;
+    onRecordReplays: (on: boolean) => void;
   }) {
     const modal = document.createElement("div");
     modal.className = "mode-modal";
@@ -328,6 +333,10 @@ export class UI {
           )
           .join("")}</div>
       </div>
+      <div class="settings-section"><div class="hint">replays</div>
+        <label class="settings-row"><span>auto-record matches</span>
+          <input id="set-record" type="checkbox" ${opts.recordReplays ? "checked" : ""} /></label>
+      </div>
       <div class="hint">Esc to close</div>`;
     this.root.appendChild(modal);
     const close = () => modal.remove();
@@ -346,6 +355,8 @@ export class UI {
     mvol.oninput = () => opts.onMusicVolume(Number(mvol.value) / 100);
     const mmute = modal.querySelector<HTMLInputElement>("#set-mmute")!;
     mmute.onchange = () => opts.onMusicMuted(mmute.checked);
+    const rec = modal.querySelector<HTMLInputElement>("#set-record")!;
+    rec.onchange = () => opts.onRecordReplays(rec.checked);
     for (const b of modal.querySelectorAll<HTMLButtonElement>(".q-btn")) {
       b.onclick = () => {
         opts.onQuality(b.dataset.q as Quality);
@@ -556,7 +567,9 @@ export class UI {
             ${
               ctx.onWatchReplay
                 ? `<button id="h-replay" class="big-btn secondary">WATCH REPLAY</button>`
-                : ""
+                : ctx.onSaveReplayFile
+                  ? `<button id="h-replay-save" class="big-btn secondary" title="couldn't save to browser storage — download the file instead">SAVE REPLAY FILE</button>`
+                  : ""
             }
             ${
               isHost
@@ -570,6 +583,8 @@ export class UI {
       if (btn) btn.onclick = ctx.onRematch;
       const replayBtn = document.getElementById("h-replay");
       if (replayBtn && ctx.onWatchReplay) replayBtn.onclick = ctx.onWatchReplay;
+      const saveBtn = document.getElementById("h-replay-save");
+      if (saveBtn && ctx.onSaveReplayFile) saveBtn.onclick = ctx.onSaveReplayFile;
     } else {
       this.overlay.innerHTML = "";
     }

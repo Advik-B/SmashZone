@@ -8,7 +8,7 @@
 import { POWERUP_NAMES } from "../net/messages";
 import { colorOf, esc } from "../ui/ui";
 import { ExportCancelled, webCodecsAvailable, type ExportRequest } from "./export";
-import type { ReplayMarker } from "./format";
+import { BUILD_ID, type ReplayMarker } from "./format";
 import type { ReplayMeta } from "./store";
 import type { ReplayDataset } from "./dataset";
 import type { ReplayPlayer } from "./player";
@@ -321,6 +321,11 @@ export class ReplayViewerUI {
       <div class="hud-room">REPLAY · ROOM ${esc(h.code)}${
         h.partial ? " · PARTIAL" : ""
       }</div>
+      ${
+        h.buildId !== BUILD_ID
+          ? `<div class="rv-warn">recorded on build ${esc(h.buildId)} — playback may be wrong</div>`
+          : ""
+      }
       <div class="hud-feed" id="h-feed"></div>
       <div class="hud-center" id="h-center"><div id="h-title"></div><div class="hud-sub" id="h-sub"></div></div>
       <div class="rv-bar">

@@ -48,6 +48,7 @@ describe("replay playback", () => {
     await host.page.click("#m-replays");
     await host.page.waitForSelector(".rl-row", { timeout: 10_000 });
     expect(await host.page.locator(".rl-row").count()).toBe(1);
+    await screenshot(host.page, "replay-library");
     await host.page.click(".rl-watch");
     await host.page.waitForSelector(".rv-bar", { timeout: 15_000 });
 

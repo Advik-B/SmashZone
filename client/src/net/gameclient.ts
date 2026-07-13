@@ -218,6 +218,15 @@ export class GameClient {
         this.onWatchReplay && this.lastReplay?.id
           ? () => this.onWatchReplay!(this.lastReplay!.id!)
           : null,
+      onSaveReplayFile:
+        this.lastReplay && !this.lastReplay.id
+          ? () => {
+              const r = this.lastReplay!;
+              void import("../replay/replayui").then(({ downloadBlob, replayFilename }) =>
+                downloadBlob(r.blob, replayFilename(r.header, "szr")),
+              );
+            }
+          : null,
     };
   }
 
