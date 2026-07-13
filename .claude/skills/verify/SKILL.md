@@ -93,4 +93,3 @@ wasm-bindgen target/wasm32-unknown-unknown/release/sim_wasm.wasm --target web \
   `--enable-unsafe-swiftshader` so WebGL works without a GPU.
 - One KO ends a round (last robot standing); streak/multi-KO feedback needs
   3+ players in a round.
-</content>
