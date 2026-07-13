@@ -33,8 +33,15 @@ describe("match flow", () => {
   test("countdown leads into play", async () => {
     const { host } = await startedMatch();
     await waitPhase(host, "Countdown", 15_000);
-    // The countdown renders a center title (the "3/2/1/GO" ticker).
-    expect(((await host.textContent("#h-title")) ?? "").length).toBeGreaterThan(0);
+    // The countdown renders a center title (the "3/2/1/GO" ticker). It's
+    // written by the render loop's next frame, not the phase change itself,
+    // so wait for it rather than sampling once (slow CI runners can read the
+    // DOM before the first countdown frame paints).
+    await host.waitForFunction(
+      () => (document.getElementById("h-title")?.textContent ?? "").length > 0,
+      undefined,
+      { timeout: 10_000, polling: 100 },
+    );
     await waitPhase(host, "Playing", 15_000);
   });
 
