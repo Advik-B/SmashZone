@@ -7,6 +7,7 @@
 
 import { POWERUP_NAMES } from "../net/messages";
 import { colorOf, esc } from "../ui/ui";
+import { ExportCancelled, webCodecsAvailable, type ExportRequest } from "./export";
 import type { ReplayMarker } from "./format";
 import type { ReplayMeta } from "./store";
 import type { ReplayDataset } from "./dataset";
@@ -346,6 +347,7 @@ export class ReplayViewerUI {
             <button class="rv-cam" data-cam="free" title="fly camera: WASD + Space/Shift, scroll = speed (2)">FREE</button>
             <button class="rv-cam" data-cam="playerview" title="what they saw — exact for the recording player, approximate for others (3)">POV</button>
           </div>
+          <button id="rv-export" title="export a video clip">EXPORT</button>
           <div id="rv-time" class="rv-time">0:00</div>
           <div class="rv-players" id="rv-players">${followChips}</div>
         </div>
@@ -379,6 +381,8 @@ export class ReplayViewerUI {
     for (const b of this.root.querySelectorAll<HTMLButtonElement>(".rv-cam")) {
       b.onclick = () => this.pickCamera(b.dataset.cam as "follow" | "free" | "playerview");
     }
+    (document.getElementById("rv-export") as HTMLButtonElement).onclick = () =>
+      this.openExport();
 
     for (const b of this.root.querySelectorAll<HTMLButtonElement>(".rv-pchip")) {
       b.onclick = () => {
@@ -437,10 +441,133 @@ export class ReplayViewerUI {
     }
   }
 
+  /** Export dialog: camera preset, size, fps, range, format → progress → file. */
+  private openExport() {
+    const p = this.player;
+    if (!p || p.isExporting || this.root.querySelector(".rv-export-modal")) return;
+    p.pause();
+    const ds = p.dataset;
+    const players = ds.allPlayers();
+    const targetName = esc(
+      players.find((x) => x.id === p.followTargetId)?.name ?? "player",
+    );
+    const round = ds.roundAt(p.playheadTick);
+    const canMp4 = webCodecsAvailable();
+
+    const modal = document.createElement("div");
+    modal.className = "mode-modal rv-export-modal";
+    modal.innerHTML = `
+      <h2>EXPORT CLIP</h2>
+      <div class="rv-ex-grid">
+        <div class="rv-ex-row"><span>camera</span>
+          <label><input type="radio" name="ex-cam" value="follow" checked /> follow ${targetName}</label>
+          <label title="exact for the recording player, approximate for others"><input type="radio" name="ex-cam" value="playerview" /> ${targetName}'s view</label>
+        </div>
+        <div class="rv-ex-row"><span>size</span>
+          <label><input type="radio" name="ex-res" value="720" checked /> 720p</label>
+          <label><input type="radio" name="ex-res" value="1080" /> 1080p</label>
+        </div>
+        <div class="rv-ex-row"><span>fps</span>
+          <label><input type="radio" name="ex-fps" value="30" /> 30</label>
+          <label><input type="radio" name="ex-fps" value="60" checked /> 60</label>
+        </div>
+        <div class="rv-ex-row"><span>range</span>
+          <label><input type="radio" name="ex-range" value="all" checked /> whole replay</label>
+          ${round ? `<label><input type="radio" name="ex-range" value="round" /> round ${round.round}</label>` : ""}
+        </div>
+        <div class="rv-ex-row"><span>format</span>
+          <label><input type="radio" name="ex-mode" value="mp4" ${canMp4 ? "checked" : "disabled"} /> MP4 · fast · silent</label>
+          <label><input type="radio" name="ex-mode" value="webm" ${canMp4 ? "" : "checked"} /> WebM · real-time · with sound</label>
+        </div>
+      </div>
+      <div class="rv-ex-note hint">${
+        canMp4
+          ? "MP4 renders faster than real time. WebM plays the clip once at 1× — keep this tab visible."
+          : "this browser can't encode MP4 — WebM (real-time) it is"
+      }</div>
+      <div class="rv-ex-progress" style="display:none">
+        <div class="rv-ex-bar"><div class="rv-ex-fill" style="width:0%"></div></div>
+        <div class="rv-ex-pct">0%</div>
+      </div>
+      <div class="row" style="justify-content:center;gap:10px">
+        <button id="ex-start">START</button>
+        <button id="ex-close" class="secondary">CLOSE</button>
+      </div>`;
+    this.root.appendChild(modal);
+
+    const pick = (name: string) =>
+      (modal.querySelector(`input[name="${name}"]:checked`) as HTMLInputElement | null)
+        ?.value;
+    let handle: { done: Promise<Blob>; cancel(): void } | null = null;
+    const note = modal.querySelector(".rv-ex-note") as HTMLElement;
+    const close = () => {
+      handle?.cancel();
+      modal.remove();
+    };
+    (modal.querySelector("#ex-close") as HTMLButtonElement).onclick = close;
+    this.exportModalClose = close;
+
+    (modal.querySelector("#ex-start") as HTMLButtonElement).onclick = async () => {
+      if (handle) return;
+      const res = pick("ex-res") === "1080" ? [1920, 1080] : [1280, 720];
+      const rangeRound = pick("ex-range") === "round" ? round : null;
+      const startTick = rangeRound
+        ? (rangeRound.countdownTick ?? rangeRound.roundStartTick ?? ds.startTick)
+        : ds.startTick;
+      const endTick = rangeRound ? (rangeRound.endTick ?? ds.endTick) : ds.endTick;
+      const req: ExportRequest = {
+        width: res[0],
+        height: res[1],
+        fps: pick("ex-fps") === "30" ? 30 : 60,
+        camera: pick("ex-cam") === "playerview" ? "playerview" : "follow",
+        targetId: p.followTargetId,
+        startTick,
+        endTick,
+        mode: pick("ex-mode") === "webm" ? "webm" : "mp4",
+        onProgress: (f) => {
+          const fill = modal.querySelector(".rv-ex-fill") as HTMLElement | null;
+          const pct = modal.querySelector(".rv-ex-pct") as HTMLElement | null;
+          if (fill) fill.style.width = `${(f * 100).toFixed(1)}%`;
+          if (pct) pct.textContent = `${Math.round(f * 100)}%`;
+        },
+      };
+      for (const input of modal.querySelectorAll("input, #ex-start")) {
+        (input as HTMLInputElement | HTMLButtonElement).disabled = true;
+      }
+      (modal.querySelector(".rv-ex-progress") as HTMLElement).style.display = "";
+      note.textContent = req.mode === "webm" ? "recording in real time — keep this tab visible…" : "rendering…";
+      try {
+        handle = await p.startExport(req);
+        const blob = await handle.done;
+        downloadBlob(blob, replayFilename(ds.header, blob.type.includes("mp4") ? "mp4" : "webm"));
+        note.textContent = "saved!";
+        setTimeout(() => modal.remove(), 900);
+      } catch (e) {
+        if (e instanceof ExportCancelled) {
+          modal.remove();
+        } else {
+          note.textContent = `export failed: ${e instanceof Error ? e.message : e}`;
+          (modal.querySelector(".rv-ex-progress") as HTMLElement).style.display = "none";
+          handle = null;
+          for (const input of modal.querySelectorAll("input, #ex-start")) {
+            (input as HTMLInputElement | HTMLButtonElement).disabled = false;
+          }
+        }
+      }
+    };
+  }
+
+  private exportModalClose: (() => void) | null = null;
+
   private onKey(e: KeyboardEvent) {
     const p = this.player;
     if (!p) return;
     if (e.target instanceof HTMLInputElement) return;
+    if (this.root.querySelector(".rv-export-modal")) {
+      // The export dialog owns the keyboard; Esc closes (and cancels) it.
+      if (e.key === "Escape") this.exportModalClose?.();
+      return;
+    }
     switch (e.key) {
       case " ":
         e.preventDefault();

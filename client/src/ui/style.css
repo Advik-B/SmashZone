@@ -1251,6 +1251,79 @@ body {
   background: #3a4374;
 }
 
+/* ---- replays: export dialog ---- */
+
+.rv-export-modal .rv-ex-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 14px 0;
+  text-align: left;
+}
+
+.rv-ex-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 14px;
+}
+
+.rv-ex-row > span {
+  width: 68px;
+  color: #9aa3d6;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.rv-ex-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #cdd3f0;
+}
+
+.rv-ex-row label:has(input:disabled) {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.rv-ex-note {
+  min-height: 20px;
+  margin-bottom: 10px;
+}
+
+.rv-ex-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.rv-ex-bar {
+  flex: 1;
+  height: 10px;
+  border-radius: 5px;
+  background: #171c3a;
+  border: 1px solid #2a3055;
+  overflow: hidden;
+}
+
+.rv-ex-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #e2537a, #ff6f8b);
+  transition: width 0.15s linear;
+}
+
+.rv-ex-pct {
+  font-variant-numeric: tabular-nums;
+  color: #9aa3d6;
+  min-width: 40px;
+  text-align: right;
+}
+
 @media (max-width: 820px) {
   .rv-bar {
     font-size: 12px;

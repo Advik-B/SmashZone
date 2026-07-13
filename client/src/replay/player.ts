@@ -47,10 +47,15 @@ export class ReplayPlayer {
   private lastFocusYaw = 0;
   private lastCountdown = -1;
   private rig: ReplayCameraRig;
+  private exporting = false;
+  private exportSfx = false;
+  private exportFollowYaw = 0;
+  /** Set when the most recent export finished (e2e / UI feedback). */
+  lastExport: { size: number; type: string } | null = null;
 
   constructor(
     readonly dataset: ReplayDataset,
-    private renderer: Renderer,
+    readonly renderer: Renderer,
     private input: InputManager,
     private ui: ReplayViewerUI,
     private onExit: () => void,
@@ -188,10 +193,76 @@ export class ReplayPlayer {
     if (target) this.seek(target.tick);
   }
 
+  // ---- video export facade (driven by replay/export.ts) ----
+
+  get isExporting(): boolean {
+    return this.exporting;
+  }
+
+  beginExport(startTick: number, targetId: number, withSfx: boolean) {
+    this.pause();
+    this.setFollowTarget(targetId);
+    this.seek(startTick);
+    this.exporting = true;
+    this.exportSfx = withSfx;
+    this.drawWorld(0); // settle focus/facing at the start tick
+    this.exportFollowYaw = this.lastFocusYaw + Math.PI;
+  }
+
+  /** Render one deterministic export frame at an absolute tick. */
+  exportStep(tick: number, dtSec: number, camera: "follow" | "playerview") {
+    const prev = this.playhead;
+    this.playhead = Math.max(this.dataset.startTick, Math.min(this.dataset.endTick, tick));
+    this.fireEvents(prev, this.playhead);
+    this.drawWorld(dtSec);
+    if (camera === "playerview") {
+      const pv = this.rig.playerViewAngles(
+        this.dataset,
+        this.playhead,
+        this.followTarget,
+        this.lastFocusYaw,
+        dtSec,
+      );
+      this.renderer.render(dtSec, this.lastFocus, pv.yaw, pv.pitch);
+    } else {
+      // Deterministic chase cam: ease in behind the target's facing.
+      this.exportFollowYaw = lerpAngle(
+        this.exportFollowYaw,
+        this.lastFocusYaw + Math.PI,
+        1 - Math.exp(-2.5 * dtSec),
+      );
+      this.renderer.render(dtSec, this.lastFocus, this.exportFollowYaw, -0.35);
+    }
+  }
+
+  endExport() {
+    this.exporting = false;
+  }
+
+  /** Kick off a video export; the module loads on demand (code-split). */
+  async startExport(
+    opts: import("./export").ExportRequest,
+  ): Promise<import("./export").ExportHandle> {
+    const { exportVideo } = await import("./export");
+    const handle = exportVideo(this, opts);
+    void handle.done
+      .then((blob) => {
+        this.lastExport = { size: blob.size, type: blob.type };
+      })
+      .catch(() => {});
+    return handle;
+  }
+
   // ---- frame loop ----
 
   frame(now: number) {
     if (this.destroyed) return;
+    if (this.exporting) {
+      // The export loop owns stepping + rendering; keep the wall clock warm
+      // so playback resumes without a jump.
+      this.lastUpdateMs = now;
+      return;
+    }
     const dtMs = Math.min(100, now - (this.lastUpdateMs || now));
     this.lastUpdateMs = now;
     const dtSec = dtMs / 1000;
@@ -206,6 +277,33 @@ export class ReplayPlayer {
       if (this.playhead >= this.dataset.endTick) this.playing = false;
     }
     this.fireEvents(prev, this.playhead);
+    this.drawWorld(dtSec);
+
+    switch (this.rig.mode) {
+      case "free": {
+        this.renderer.setCameraOverride(this.rig.updateFree(dtSec));
+        this.renderer.render(dtSec, this.lastFocus, 0, 0);
+        break;
+      }
+      case "playerview": {
+        const pv = this.rig.playerViewAngles(
+          this.dataset,
+          this.playhead,
+          this.followTarget,
+          this.lastFocusYaw,
+          dtSec,
+        );
+        this.renderer.render(dtSec, this.lastFocus, pv.yaw, pv.pitch);
+        break;
+      }
+      default:
+        this.renderer.render(dtSec, this.lastFocus, this.input.camYaw, this.input.camPitch);
+    }
+    this.ui.tick();
+  }
+
+  /** Everything between transport and camera: entities, tiles, chrome. */
+  private drawWorld(dtSec: number) {
     this.syncRoster(false);
     this.applyArena(false);
 
@@ -268,33 +366,12 @@ export class ReplayPlayer {
 
     this.renderer.updateTiles(this.sim.tile_states());
     this.updateChrome(phase);
-
-    switch (this.rig.mode) {
-      case "free": {
-        this.renderer.setCameraOverride(this.rig.updateFree(dtSec));
-        this.renderer.render(dtSec, this.lastFocus, 0, 0);
-        break;
-      }
-      case "playerview": {
-        const pv = this.rig.playerViewAngles(
-          this.dataset,
-          this.playhead,
-          this.followTarget,
-          this.lastFocusYaw,
-          dtSec,
-        );
-        this.renderer.render(dtSec, this.lastFocus, pv.yaw, pv.pitch);
-        break;
-      }
-      default:
-        this.renderer.render(dtSec, this.lastFocus, this.input.camYaw, this.input.camPitch);
-    }
-    this.ui.tick();
   }
 
   // ---- internals ----
 
   private get sfxOn(): boolean {
+    if (this.exporting) return this.exportSfx;
     return this.speed <= SFX_MAX_SPEED;
   }
 
