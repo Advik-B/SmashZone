@@ -23,6 +23,10 @@ export class Connection {
   private retryTimer: number | null = null;
 
   onMessage: (msg: ServerMsg) => void = () => {};
+  /** Raw-bytes tee for the replay recorder: fires for every decoded message,
+   *  before onMessage, with the exact wire bytes. Survives reconnects (the
+   *  same Connection re-attaches its handlers to each new socket). */
+  onRaw: (bytes: Uint8Array, msg: ServerMsg) => void = () => {};
   onClose: (reason: string) => void = () => {};
   onReconnecting: (attempt: number) => void = () => {};
 
@@ -50,14 +54,14 @@ export class Connection {
     this.ws = ws;
 
     ws.onmessage = (ev) => {
-      const msg = decode_server_msg(new Uint8Array(ev.data as ArrayBuffer)) as
-        | ServerMsg
-        | null;
+      const bytes = new Uint8Array(ev.data as ArrayBuffer);
+      const msg = decode_server_msg(bytes) as ServerMsg | null;
       if (!msg) return;
       if (msg.type === "Error") {
         this.gotError = true;
         this.closedReason = msg.msg;
       }
+      this.onRaw(bytes, msg);
       this.onMessage(msg);
     };
     ws.onclose = () => this.handleClose();

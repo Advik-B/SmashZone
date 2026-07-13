@@ -24,6 +24,7 @@ import {
   setVolume,
 } from "./game/audio";
 import { savedQuality, saveQuality } from "./game/quality";
+import * as replayStore from "./replay/store";
 import { UI } from "./ui/ui";
 
 async function createRoom(): Promise<string> {
@@ -58,7 +59,12 @@ async function main() {
   const touch = isTouchDevice() ? new TouchControls(input) : null;
   const ui = new UI();
 
-  let client: GameClient | null = null;
+  // Whatever currently owns the frame loop: a live GameClient or (later) a
+  // replay player. Both expose the same frame/destroy shape.
+  let client: { frame(now: number): void; destroy(): void } | null = null;
+
+  // Dev/test hook for the replay library (harmless in production).
+  (window as unknown as Record<string, unknown>).__replayStore = replayStore;
 
   window.addEventListener("resize", () => renderer.resize());
 
