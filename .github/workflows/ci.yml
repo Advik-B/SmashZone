@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  rust:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  client:
+    name: typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Build the WASM sim
+        run: |
+          cargo install wasm-bindgen-cli --version 0.2.126 --locked
+          cargo build -p sim-wasm --target wasm32-unknown-unknown --release
+          wasm-bindgen target/wasm32-unknown-unknown/release/sim_wasm.wasm \
+            --target web --out-dir client/src/wasm/pkg
+      - name: Install client deps
+        run: cd client && bun install --frozen-lockfile
+      - name: Typecheck
+        run: cd client && bun run typecheck
+      - name: Build client bundle
+        run: cd client && bun run build
+
+  e2e:
+    name: playwright integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install client deps
+        run: cd client && bun install --frozen-lockfile
+      - name: Install Chromium for Playwright
+        run: cd client && bunx playwright install --with-deps chromium
+      - name: Prepare wasm toolchain
+        # The orchestrator falls back to wasm-bindgen when wasm-pack is absent.
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+      - name: Run the integration suite
+        # run.ts builds wasm + client + gameserver, spawns it, and runs bun test.
+        run: cd client && bun run test:e2e
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: client/e2e/.artifacts
+          if-no-files-found: ignore
