@@ -135,6 +135,11 @@ export interface PhaseCtx {
   onRematch: () => void;
   onAddBot: (difficulty: number) => void;
   onRemoveBot: (id: number) => void;
+  /** Present once the finished match's recording is saved (match-end panel). */
+  onWatchReplay?: (() => void) | null;
+  /** Fallback when the recording exists but couldn't be persisted (quota,
+   *  private mode): offer a direct .szr download instead. */
+  onSaveReplayFile?: (() => void) | null;
 }
 
 export class UI {
@@ -172,6 +177,7 @@ export class UI {
     onJoin: (name: string, code: string) => void,
     error = "",
     onChangeControls: (() => void) | null = null,
+    onReplays: (() => void) | null = null,
   ) {
     const saved = localStorage.getItem("sz-name") ?? "";
     const modeLabel =
@@ -191,6 +197,7 @@ export class UI {
           <input id="m-code" maxlength="4" placeholder="CODE" />
           <button id="m-join" class="secondary">Join</button>
         </div>
+        ${onReplays ? `<button id="m-replays" class="secondary">Replays</button>` : ""}
         <div class="hint">${menuControlsHint()}</div>
         ${
           onChangeControls
@@ -220,6 +227,10 @@ export class UI {
       if (modeBtn) modeBtn.onclick = onChangeControls;
       const settingsBtn = document.getElementById("m-settings");
       if (settingsBtn) settingsBtn.onclick = onChangeControls;
+    }
+    if (onReplays) {
+      const replaysBtn = document.getElementById("m-replays");
+      if (replaysBtn) replaysBtn.onclick = onReplays;
     }
   }
 
@@ -289,6 +300,8 @@ export class UI {
     onMusicMuted: (m: boolean) => void;
     quality: Quality;
     onQuality: (q: Quality) => void;
+    recordReplays: boolean;
+    onRecordReplays: (on: boolean) => void;
   }) {
     const modal = document.createElement("div");
     modal.className = "mode-modal";
@@ -320,6 +333,10 @@ export class UI {
           )
           .join("")}</div>
       </div>
+      <div class="settings-section"><div class="hint">replays</div>
+        <label class="settings-row"><span>auto-record matches</span>
+          <input id="set-record" type="checkbox" ${opts.recordReplays ? "checked" : ""} /></label>
+      </div>
       <div class="hint">Esc to close</div>`;
     this.root.appendChild(modal);
     const close = () => modal.remove();
@@ -338,6 +355,8 @@ export class UI {
     mvol.oninput = () => opts.onMusicVolume(Number(mvol.value) / 100);
     const mmute = modal.querySelector<HTMLInputElement>("#set-mmute")!;
     mmute.onchange = () => opts.onMusicMuted(mmute.checked);
+    const rec = modal.querySelector<HTMLInputElement>("#set-record")!;
+    rec.onchange = () => opts.onRecordReplays(rec.checked);
     for (const b of modal.querySelectorAll<HTMLButtonElement>(".q-btn")) {
       b.onclick = () => {
         opts.onQuality(b.dataset.q as Quality);
@@ -544,14 +563,28 @@ export class UI {
               }<br><b style="font-size:26px">${s.wins}</b></div>`;
             })
             .join("")}</div>
-          ${
-            isHost
-              ? `<button id="h-rematch" class="big-btn">REMATCH</button>`
-              : `<div class="hint">waiting for the host…</div>`
-          }
+          <div class="row" style="justify-content:center">
+            ${
+              ctx.onWatchReplay
+                ? `<button id="h-replay" class="big-btn secondary">WATCH REPLAY</button>`
+                : ctx.onSaveReplayFile
+                  ? `<button id="h-replay-save" class="big-btn secondary" title="couldn't save to browser storage — download the file instead">SAVE REPLAY FILE</button>`
+                  : ""
+            }
+            ${
+              isHost
+                ? `<button id="h-rematch" class="big-btn">REMATCH</button>`
+                : ""
+            }
+          </div>
+          ${isHost ? "" : `<div class="hint">waiting for the host…</div>`}
         </div>`;
       const btn = document.getElementById("h-rematch");
       if (btn) btn.onclick = ctx.onRematch;
+      const replayBtn = document.getElementById("h-replay");
+      if (replayBtn && ctx.onWatchReplay) replayBtn.onclick = ctx.onWatchReplay;
+      const saveBtn = document.getElementById("h-replay-save");
+      if (saveBtn && ctx.onSaveReplayFile) saveBtn.onclick = ctx.onSaveReplayFile;
     } else {
       this.overlay.innerHTML = "";
     }

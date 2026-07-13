@@ -95,6 +95,17 @@ export class Renderer {
   private fovKick = 0;
   private camPos = new THREE.Vector3(0, 8, -14);
   private followPos = new THREE.Vector3();
+  // Replay free-fly/POV camera: when set, render() skips the orbit rig.
+  private camOverride: {
+    pos: [number, number, number];
+    look: [number, number, number];
+    fov?: number;
+  } | null = null;
+  private camSnap = false;
+  // While exporting video the renderer targets a fixed encode size and
+  // ignores window resizes.
+  private exportSize: [number, number] | null = null;
+  private dprCap = 2;
   private time = 0;
   private sun!: THREE.DirectionalLight;
   private composer!: EffectComposer;
@@ -171,6 +182,7 @@ export class Renderer {
   /** Apply a quality preset (pixel ratio, shadows, bloom, particle budget). */
   applyQuality(q: Quality) {
     const p = QUALITY_PRESETS[q];
+    this.dprCap = p.dprCap;
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, p.dprCap));
     this.renderer.shadowMap.enabled = p.shadows;
     this.sun.castShadow = p.shadows;
@@ -223,12 +235,65 @@ export class Renderer {
   }
 
   resize() {
+    if (this.exportSize) return; // the export loop owns the target size
     const w = window.innerWidth;
     const h = window.innerHeight;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.composer?.setSize(w, h);
+  }
+
+  /** Render at a fixed encode resolution (video export). */
+  setRenderSize(w: number, h: number) {
+    this.exportSize = [w, h];
+    this.renderer.setPixelRatio(1);
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    this.composer?.setSize(w, h);
+  }
+
+  /** Back to window-sized rendering after an export. */
+  restoreSize() {
+    this.exportSize = null;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.dprCap));
+    this.resize();
+  }
+
+  /** The WebGL canvas (video export captures frames from it). */
+  get canvas(): HTMLCanvasElement {
+    return this.renderer.domElement;
+  }
+
+  /**
+   * Drive the camera directly (replay free-fly / player-view); pass null to
+   * return to the third-person orbit rig.
+   */
+  setCameraOverride(
+    pose: { pos: [number, number, number]; look: [number, number, number]; fov?: number } | null,
+  ) {
+    this.camOverride = pose;
+    if (!pose && Math.abs(this.camera.fov - JUICE.fov.base) > 0.01) {
+      this.camera.fov = JUICE.fov.base;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  /** Skip the orbit rig's position smoothing next frame (seeks, cam jumps). */
+  snapCamera() {
+    this.camSnap = true;
+  }
+
+  /** Kill all short-lived visuals + camera motion state (replay seeks). */
+  clearTransients() {
+    this.effects.clear();
+    this.floaters.clear();
+    for (const f of this.falling) f.mesh.removeFromParent();
+    this.falling = [];
+    this.shakeAmp = 0;
+    this.fovKick = 0;
+    this.camSnap = true;
   }
 
   /** Build tile meshes from the flat [x,y,z,...] centers array from WASM. */
@@ -437,44 +502,66 @@ export class Renderer {
       }
     }
 
-    // Third-person orbit camera.
-    this.followPos.lerp(new THREE.Vector3(focus[0], focus[1], focus[2]), 1 - Math.pow(0.001, dtSec));
-    const dist = 9;
-    const fx = Math.sin(camYaw) * Math.cos(camPitch);
-    const fy = Math.sin(camPitch);
-    const fz = Math.cos(camYaw) * Math.cos(camPitch);
-    const target = new THREE.Vector3(
-      this.followPos.x - fx * dist,
-      Math.max(this.followPos.y - fy * dist + 1.5, constants.killPlaneY + 2),
-      this.followPos.z - fz * dist,
-    );
-    this.camPos.lerp(target, 1 - Math.pow(0.0001, dtSec));
-
-    // Screen shake.
+    // Shake/FOV-kick energy decays regardless of camera mode so a stale kick
+    // never pops when the orbit rig resumes.
     this.shakeAmp = Math.max(0, this.shakeAmp - dtSec * 2.5);
-    const shake = new THREE.Vector3(
-      (Math.random() - 0.5) * this.shakeAmp,
-      (Math.random() - 0.5) * this.shakeAmp,
-      (Math.random() - 0.5) * this.shakeAmp,
-    );
-
-    // FOV punch: decay toward rest, only touching the projection while live.
     if (this.fovKick !== 0) {
       const decay = Math.exp(-JUICE.fov.decayPerSec * dtSec);
       this.fovKick = Math.abs(this.fovKick) < 0.02 ? 0 : this.fovKick * decay;
-      const fov = JUICE.fov.base + this.fovKick;
+    }
+
+    if (this.camOverride) {
+      // Replay free-fly / player-view: the caller owns the camera outright
+      // (no smoothing, no shake — a spectator camera shouldn't flinch).
+      const o = this.camOverride;
+      const fov = o.fov ?? JUICE.fov.base;
       if (Math.abs(this.camera.fov - fov) > 0.01) {
         this.camera.fov = fov;
         this.camera.updateProjectionMatrix();
       }
-    }
+      this.camera.position.set(o.pos[0], o.pos[1], o.pos[2]);
+      this.camera.lookAt(o.look[0], o.look[1], o.look[2]);
+    } else {
+      // Third-person orbit camera.
+      const focusV = new THREE.Vector3(focus[0], focus[1], focus[2]);
+      if (this.camSnap) this.followPos.copy(focusV);
+      else this.followPos.lerp(focusV, 1 - Math.pow(0.001, dtSec));
+      const dist = 9;
+      const fx = Math.sin(camYaw) * Math.cos(camPitch);
+      const fy = Math.sin(camPitch);
+      const fz = Math.cos(camYaw) * Math.cos(camPitch);
+      const target = new THREE.Vector3(
+        this.followPos.x - fx * dist,
+        Math.max(this.followPos.y - fy * dist + 1.5, constants.killPlaneY + 2),
+        this.followPos.z - fz * dist,
+      );
+      if (this.camSnap) this.camPos.copy(target);
+      else this.camPos.lerp(target, 1 - Math.pow(0.0001, dtSec));
 
-    this.camera.position.copy(this.camPos).add(shake);
-    this.camera.lookAt(
-      this.followPos.x,
-      this.followPos.y + 1.2,
-      this.followPos.z,
-    );
+      // Screen shake.
+      const shake = new THREE.Vector3(
+        (Math.random() - 0.5) * this.shakeAmp,
+        (Math.random() - 0.5) * this.shakeAmp,
+        (Math.random() - 0.5) * this.shakeAmp,
+      );
+
+      // FOV punch only touches the projection while live.
+      if (this.fovKick !== 0) {
+        const fov = JUICE.fov.base + this.fovKick;
+        if (Math.abs(this.camera.fov - fov) > 0.01) {
+          this.camera.fov = fov;
+          this.camera.updateProjectionMatrix();
+        }
+      }
+
+      this.camera.position.copy(this.camPos).add(shake);
+      this.camera.lookAt(
+        this.followPos.x,
+        this.followPos.y + 1.2,
+        this.followPos.z,
+      );
+    }
+    this.camSnap = false;
     if (this.bloomEnabled) {
       this.composer.render();
     } else {

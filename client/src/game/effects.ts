@@ -205,6 +205,19 @@ export class Effects {
     }
   }
 
+  /** Retire every live particle and flash immediately (replay seeks). */
+  clear() {
+    for (let i = 0; i < MAX; i++) {
+      this.life[i] = 0;
+      this.pos[i * 3 + 1] = 9999;
+    }
+    (this.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    for (const f of this.flashes) {
+      f.life = 0;
+      f.sprite.visible = false;
+    }
+  }
+
   /** Clamp the active particle count (quality setting). Retires excess slots. */
   setBudget(n: number) {
     this.budget = Math.max(1, Math.min(MAX, n));

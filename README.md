@@ -73,6 +73,31 @@ Netcode details:
 - **Arena shrink is free**: the schedule is a pure function of the round tick,
   so both sides compute identical tile states with zero bytes on the wire.
 
+## Replays
+
+Every match records itself automatically — on your side of the wire. The
+client keeps the server's snapshot stream (a few hundred KB per match), not a
+video, and re-renders it in-engine, Fortnite-style. Open **Replays** from the
+menu, or hit **WATCH REPLAY** right after a match:
+
+- **Timeline**: scrub with markers for KOs, big hits, pickups and bomb blasts,
+  round chips, 0.25×–4× speed, frame stepping (`,` / `.`), previous/next KO
+  (`p` / `n`), Space to pause.
+- **Cameras** (`1`/`2`/`3`): **follow** any player with the game's orbit
+  camera, **free-fly** anywhere (WASD + Space/Shift, scroll = speed), or
+  **player view** — exact for the player who recorded (their camera is part of
+  the recording), reconstructed from facing for everyone else.
+- **Export video**: frame-perfect MP4 rendered offline (usually faster than
+  real time), or real-time WebM with game audio. Follow-cam or player-cam
+  presets, 720p/1080p, 30/60 fps, whole match or a single round.
+- **Library**: the newest 10 replays are kept in browser storage (pin
+  favorites to protect them), and any replay travels as a `.szr` file —
+  save it, send it, import it on another machine. Replays are tied to the
+  game build that recorded them; the viewer warns when they differ.
+
+The server never records anything — snapshots are already byte-identical for
+every client, so your copy of the match *is* the match.
+
 ## Development
 
 ```bash

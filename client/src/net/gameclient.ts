@@ -29,27 +29,22 @@ import {
   PU_BOMB,
   PU_GUN,
 } from "./messages";
-import * as THREE from "three";
 import { playMusic, sfx } from "../game/audio";
+import {
+  ReplayRecorder,
+  type FinalizeReason,
+  type FinalizedReplay,
+} from "../replay/recorder";
+import { dispatchEventFx, type HitEvent } from "../game/eventfx";
+import { sampleBuffer, type RemoteSample } from "../game/interp";
 import { haptic, JUICE } from "../game/juice";
 import { ANIM_DANCE } from "../game/players";
 import type { Renderer } from "../game/renderer";
 import type { InputManager } from "../game/input";
-import { colorOf, esc, type PhaseCtx, type UI } from "../ui/ui";
+import { type PhaseCtx, type UI } from "../ui/ui";
 
 const TICK_MS = 1000 / constants.tickRate;
 const INTERP_TICKS = (constants.interpDelayMs / 1000) * constants.tickRate;
-
-interface RemoteSample {
-  tick: number;
-  pos: Vec3;
-  yaw: number;
-  anim: number;
-  alive: boolean;
-  powerup: number;
-  intangible: boolean;
-  grounded: boolean;
-}
 
 interface ProjSample {
   tick: number;
@@ -64,13 +59,6 @@ interface PendingInput {
   buttons: number;
   pos: Vec3;
   vel: Vec3;
-}
-
-function lerpAngle(a: number, b: number, t: number): number {
-  let d = (b - a) % (Math.PI * 2);
-  if (d > Math.PI) d -= Math.PI * 2;
-  if (d < -Math.PI) d += Math.PI * 2;
-  return a + d * t;
 }
 
 function pick<T>(arr: readonly T[]): T {
@@ -149,6 +137,10 @@ export class GameClient {
   private combo = 0;
   private comboExpiresAt = 0;
   private streaks = new Map<number, number>();
+  /** Auto match recorder; taps the connection's raw message stream. */
+  readonly recorder: ReplayRecorder;
+  /** Most recent finalized recording of this session (for "watch replay"). */
+  lastReplay: FinalizedReplay | null = null;
   destroyed = false;
 
   constructor(
@@ -158,8 +150,14 @@ export class GameClient {
     private input: InputManager,
     private ui: UI,
     private onExit: (reason: string) => void,
+    private onWatchReplay: ((replayId: string) => void) | null = null,
   ) {
+    this.recorder = new ReplayRecorder(() => ({
+      yaw: this.input.camYaw,
+      pitch: this.input.camPitch,
+    }));
     this.conn = new Connection(code, name);
+    this.conn.onRaw = (bytes, m) => this.recorder.onServerMsg(bytes, m);
     this.conn.onMessage = (m) => this.onMessage(m);
     this.conn.onReconnecting = (attempt) => {
       this.reconnecting = true;
@@ -168,6 +166,7 @@ export class GameClient {
     this.conn.onClose = (reason) => {
       this.destroyed = true;
       clearInterval(this.pingTimer);
+      void this.finalizeReplay("disconnect");
       this.onExit(reason);
     };
     this.pingTimer = window.setInterval(() => {
@@ -178,6 +177,7 @@ export class GameClient {
   destroy() {
     this.destroyed = true;
     clearInterval(this.pingTimer);
+    void this.finalizeReplay("exit");
     this.conn.close();
   }
 
@@ -214,6 +214,19 @@ export class GameClient {
       onRematch: () => this.conn.send(encode_rematch()),
       onAddBot: (difficulty: number) => this.conn.send(encode_add_bot(difficulty)),
       onRemoveBot: (id: number) => this.conn.send(encode_remove_bot(id)),
+      onWatchReplay:
+        this.onWatchReplay && this.lastReplay?.id
+          ? () => this.onWatchReplay!(this.lastReplay!.id!)
+          : null,
+      onSaveReplayFile:
+        this.lastReplay && !this.lastReplay.id
+          ? () => {
+              const r = this.lastReplay!;
+              void import("../replay/replayui").then(({ downloadBlob, replayFilename }) =>
+                downloadBlob(r.blob, replayFilename(r.header, "szr")),
+              );
+            }
+          : null,
     };
   }
 
@@ -239,6 +252,24 @@ export class GameClient {
         }
         this.renderer.setTiles(this.sim.tile_centers());
         this.ui.buildHud(this.code);
+        // Recording across a reconnect continues with a fresh roster frame;
+        // joining an in-flight match starts a (partial) recording now.
+        if (this.recorder.active) {
+          this.recorder.rosterReset(msg.players, msg.phase, msg.tick);
+        } else if (
+          msg.phase.type === "Countdown" ||
+          msg.phase.type === "Playing" ||
+          msg.phase.type === "RoundEnd"
+        ) {
+          this.recorder.begin({
+            code: msg.code,
+            localPlayerId: msg.yourId,
+            players: msg.players,
+            phase: msg.phase,
+            tick: msg.tick,
+            joinedMidMatch: true,
+          });
+        }
         this.applyPhase(msg.phase);
         break;
       }
@@ -267,7 +298,21 @@ export class GameClient {
         break;
       }
       case "PhaseChange":
+        // A match recording spans first Countdown -> MatchEnd. The Countdown
+        // PhaseChange itself lands in the ROSTER frame (the recorder wasn't
+        // active when its bytes passed the tap); rematches re-arm here too.
+        if (msg.phase.type === "Countdown" && !this.recorder.active) {
+          this.recorder.begin({
+            code: this.code,
+            localPlayerId: this.myId,
+            players: [...this.metas.values()],
+            phase: msg.phase,
+            tick: msg.tick,
+            joinedMidMatch: false,
+          });
+        }
         this.applyPhase(msg.phase);
+        if (msg.phase.type === "MatchEnd") void this.finalizeReplay("match-end");
         break;
       case "Snapshot":
         this.onSnapshot(msg.snapshot);
@@ -279,6 +324,19 @@ export class GameClient {
       case "Error":
         // Connection close handler surfaces it.
         break;
+    }
+  }
+
+  private async finalizeReplay(reason: FinalizeReason) {
+    try {
+      const fin = await this.recorder.finalize(reason);
+      if (fin && !this.destroyed) {
+        this.lastReplay = fin;
+        this.refreshOverlay(); // surfaces the "watch replay" button
+      }
+    } catch (e) {
+      // A failed save must never take the match-end flow down with it.
+      console.warn("replay finalize failed:", e);
     }
   }
 
@@ -496,160 +554,42 @@ export class GameClient {
   }
 
   private onEvent(ev: GameEvent) {
-    switch (ev.type) {
-      case "Hit": {
-        this.renderer.flashPlayer(ev.target);
-        const p = this.renderer.playerPos(ev.target);
-        if (p) {
-          this.renderer.effects.impactBurst(p, ev.dir, ev.heavy, ev.damage);
-          this.renderer.effects.spawnFlash(
-            new THREE.Vector3(p.x, p.y + 0.6, p.z),
-            ev.heavy ? 1.5 : 0.9 + ev.damage * 0.01,
-          );
-          this.renderer.spawnDamage([p.x, p.y, p.z], ev.damage, ev.heavy);
-        }
-        // Combo (display-only): consecutive hits I land inside the window.
-        // Getting hit breaks it. Rising pitch per hit in the chain.
-        const now = performance.now();
-        let pitch = 1;
-        if (ev.attacker === this.myId && ev.target !== this.myId) {
-          this.combo = now < this.comboExpiresAt ? this.combo + 1 : 1;
-          this.comboExpiresAt = now + JUICE.combo.windowMs;
-          this.ui.setCombo(this.combo);
-          pitch =
-            1 +
-            Math.min(this.combo - 1, JUICE.combo.pitchMaxSteps) * JUICE.combo.pitchStep;
-        } else if (ev.target === this.myId) {
-          this.resetCombo();
-        }
-        if (ev.heavy) sfx.hitHeavy(pitch);
-        else sfx.hitLight(pitch);
-        // Feedback scales with the hit, gated on local involvement.
-        if (ev.target === this.myId) {
-          this.renderer.shake(
-            Math.min(
-              JUICE.shake.takenMax,
-              (ev.heavy ? JUICE.shake.takenHeavy : JUICE.shake.takenLight) +
-                ev.damage * JUICE.shake.takenPerDamage,
-            ),
-          );
-          if (ev.heavy) this.renderer.kickFov(JUICE.fov.takenHeavy);
-          haptic(ev.heavy ? JUICE.haptics.hitHeavy : JUICE.haptics.hitLight);
-        } else if (ev.attacker === this.myId) {
-          this.renderer.shake(JUICE.shake.dealtBase + ev.damage * JUICE.shake.dealtPerDamage);
-          if (ev.heavy) this.renderer.kickFov(JUICE.fov.dealtHeavy);
-          haptic(JUICE.haptics.dealt);
-        }
-        // Kill-feed credit (valid 5 s) + local hitstop (extend-only).
-        this.lastHitBy.set(ev.target, { attacker: ev.attacker, t: now });
-        if (ev.target === this.myId || ev.attacker === this.myId) {
-          const stop = ev.heavy
-            ? Math.min(
-                JUICE.hitstop.maxMs,
-                JUICE.hitstop.heavyBaseMs + ev.damage * JUICE.hitstop.heavyPerDamage,
-              )
-            : JUICE.hitstop.lightMs;
-          this.hitstopMs = Math.max(this.hitstopMs, stop);
-        }
-        break;
-      }
-      case "Slam": {
-        const p = this.renderer.playerPos(ev.player);
-        if (p) this.renderer.effects.slamRing(p);
-        sfx.slam();
-        this.renderer.shake(JUICE.shake.slam);
-        break;
-      }
-      case "Death": {
-        const p = this.renderer.playerPos(ev.player);
-        if (p && p.y > -30) {
-          this.renderer.effects.deathBurst(p, this.renderer.playerColor(ev.player), ev.vel);
-        }
-        // "KO!" where they went out (wire pos; clamped up so it stays in view).
-        this.renderer.spawnText(
-          [ev.pos[0], Math.max(ev.pos[1], -6), ev.pos[2]],
-          "KO!",
-          JUICE.floater.koScale,
-          JUICE.floater.koColor,
-        );
-        sfx.death();
-        // Kill feed: credit the last attacker within 5 s, else a solo fall.
-        const victim = esc(this.metas.get(ev.player)?.name ?? "?");
-        const credit = this.lastHitBy.get(ev.player);
-        const killer =
-          credit && performance.now() - credit.t < 5000 && credit.attacker !== ev.player
-            ? credit.attacker
-            : null;
-        if (killer !== null) {
-          const meta = this.metas.get(killer);
-          const streak = (this.streaks.get(killer) ?? 0) + 1;
-          this.streaks.set(killer, streak);
-          const name = `<b style="color:${colorOf(meta?.slot ?? 0)}">${esc(meta?.name ?? "?")}</b>`;
-          const spice =
-            streak === 2
-              ? ` <span class="feed-streak">double KO!</span>`
-              : streak >= 3
-                ? ` <span class="feed-streak">${streak} KO streak!</span>`
-                : "";
-          this.ui.addFeed(`${name} knocked out ${victim}${spice}`);
-        } else {
-          this.ui.addFeed(`${victim} fell`);
-        }
-        this.streaks.delete(ev.player); // dying ends the victim's streak
-        this.lastHitBy.delete(ev.player);
-        // KO spectacle: flash for everyone, freeze/kick only when I'm involved.
-        const involved = ev.player === this.myId || killer === this.myId;
-        this.ui.flash(involved ? 0.5 : 0.3);
-        if (involved) {
-          this.hitstopMs = Math.max(this.hitstopMs, JUICE.hitstop.koMs);
-          this.renderer.kickFov(JUICE.fov.ko);
-          this.renderer.shake(JUICE.shake.ko);
-        }
-        if (ev.player === this.myId) {
-          this.resetCombo();
-          haptic(JUICE.haptics.death);
-        } else if (killer === this.myId) {
-          haptic(JUICE.haptics.kill);
-        }
-        break;
-      }
-      case "PickupSpawn": {
-        sfx.pickupSpawn();
-        const v = new THREE.Vector3(ev.pos[0], ev.pos[1], ev.pos[2]);
-        this.renderer.effects.hitBurst(v, false);
-        break;
-      }
-      case "PickupTaken": {
-        sfx.pickup();
-        const p = this.renderer.playerPos(ev.player);
-        if (p) this.renderer.effects.hitBurst(p, false);
-        break;
-      }
-      case "Fired": {
-        // Local player's shot sound already played on the button press.
-        if (ev.player !== this.myId) {
-          if (ev.kind === PU_GUN) sfx.shoot();
-          else sfx.throwBomb();
-        }
-        break;
-      }
-      case "Explosion": {
-        const v = new THREE.Vector3(ev.pos[0], ev.pos[1], ev.pos[2]);
-        if (ev.kind === PU_BOMB) {
-          this.renderer.effects.hitBurst(v, true);
-          this.renderer.effects.slamRing(v);
-          this.renderer.effects.spawnFlash(v, 2.2, 0xffb347);
-          this.renderer.shake(JUICE.shake.explosion);
-          this.renderer.kickFov(JUICE.fov.explosion);
-          sfx.explosion();
-        } else {
-          this.renderer.effects.hitBurst(v, false);
-        }
-        break;
-      }
-      default:
-        break; // tile events handled via local sim
+    dispatchEventFx(ev, {
+      renderer: this.renderer,
+      metas: this.metas,
+      localId: this.myId,
+      firedSuppressId: this.myId, // own shot sound already played on press
+      lastHitBy: this.lastHitBy,
+      streaks: this.streaks,
+      now: () => performance.now(),
+      sfxOn: true,
+      addFeed: (html) => this.ui.addFeed(html),
+      flash: (s) => this.ui.flash(s),
+      comboPitch: (hit) => this.comboPitch(hit),
+      onHitstop: (ms) => {
+        this.hitstopMs = Math.max(this.hitstopMs, ms);
+      },
+      onOwnDeath: () => this.resetCombo(),
+      haptic,
+    });
+  }
+
+  /** Combo (display-only): consecutive hits I land inside the window.
+   *  Getting hit breaks it. Rising pitch per hit in the chain. */
+  private comboPitch(ev: HitEvent): number {
+    const now = performance.now();
+    let pitch = 1;
+    if (ev.attacker === this.myId && ev.target !== this.myId) {
+      this.combo = now < this.comboExpiresAt ? this.combo + 1 : 1;
+      this.comboExpiresAt = now + JUICE.combo.windowMs;
+      this.ui.setCombo(this.combo);
+      pitch =
+        1 +
+        Math.min(this.combo - 1, JUICE.combo.pitchMaxSteps) * JUICE.combo.pitchStep;
+    } else if (ev.target === this.myId) {
+      this.resetCombo();
     }
+    return pitch;
   }
 
   private resetCombo() {
@@ -712,35 +652,6 @@ export class GameClient {
       vel: [kin[3], kin[4], kin[5]],
     });
     if (this.pending.length > 180) this.pending.shift();
-  }
-
-  private sampleBuffer(buf: RemoteSample[], tick: number): RemoteSample | null {
-    if (buf.length === 0) return null;
-    if (tick <= buf[0].tick) return buf[0];
-    const last = buf[buf.length - 1];
-    if (tick >= last.tick) return last;
-    for (let i = buf.length - 2; i >= 0; i--) {
-      const a = buf[i];
-      const b = buf[i + 1];
-      if (a.tick <= tick && tick <= b.tick) {
-        const t = (tick - a.tick) / Math.max(1, b.tick - a.tick);
-        return {
-          tick,
-          pos: [
-            a.pos[0] + (b.pos[0] - a.pos[0]) * t,
-            a.pos[1] + (b.pos[1] - a.pos[1]) * t,
-            a.pos[2] + (b.pos[2] - a.pos[2]) * t,
-          ],
-          yaw: lerpAngle(a.yaw, b.yaw, t),
-          anim: b.anim,
-          alive: b.alive,
-          powerup: b.powerup,
-          intangible: b.intangible,
-          grounded: b.grounded,
-        };
-      }
-    }
-    return last;
   }
 
   /** Called every animation frame. */
@@ -841,7 +752,7 @@ export class GameClient {
         focus = [px, py, pz];
       } else {
         const buf = this.buffers.get(id);
-        const smp = buf ? this.sampleBuffer(buf, renderTick) : null;
+        const smp = buf ? sampleBuffer(buf, renderTick) : null;
         if (!smp) continue;
         let anim = smp.alive ? smp.anim : ANIM.Dead;
         if (this.phase.type === "MatchEnd" && id === this.phase.winner) {
@@ -873,7 +784,7 @@ export class GameClient {
     // Spectator camera: follow the chosen survivor instead of arena center.
     if (this.phase.type === "Playing" && !this.localAlive && this.spectateTarget !== null) {
       const buf = this.buffers.get(this.spectateTarget);
-      const smp = buf ? this.sampleBuffer(buf, renderTick) : null;
+      const smp = buf ? sampleBuffer(buf, renderTick) : null;
       if (smp) focus = smp.pos;
     }
 

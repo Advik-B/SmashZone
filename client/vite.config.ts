@@ -1,6 +1,12 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  // Build identity baked into replay files: postcard wire bytes are only
+  // guaranteed decodable by the same build, so replays record who wrote them.
+  // CI/Docker pass BUILD_ID (e.g. the git short SHA); dev builds say "dev".
+  define: {
+    __BUILD_ID__: JSON.stringify(process.env.BUILD_ID ?? "dev"),
+  },
   server: {
     proxy: {
       "/api": "http://localhost:8080",
