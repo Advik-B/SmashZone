@@ -24,6 +24,15 @@ import {
   setVolume,
 } from "./game/audio";
 import { savedQuality, saveQuality } from "./game/quality";
+import { ReplayDataset } from "./replay/dataset";
+import { BUILD_ID } from "./replay/format";
+import { ReplayPlayer } from "./replay/player";
+import {
+  ReplayLibraryUI,
+  ReplayViewerUI,
+  downloadBlob,
+  replayFilename,
+} from "./replay/replayui";
 import * as replayStore from "./replay/store";
 import { UI } from "./ui/ui";
 
@@ -88,6 +97,81 @@ async function main() {
     );
   };
 
+  const library = new ReplayLibraryUI(document.getElementById("ui")!);
+
+  /** Replay library screen: list, watch, pin, delete, import, save-as-file. */
+  const openLibrary = async (notice = "") => {
+    document.exitPointerLock?.();
+    touch?.hide();
+    playMusic("menu");
+    let items: replayStore.ReplayMeta[] = [];
+    let storageLine = "";
+    try {
+      items = await replayStore.listReplays();
+      const est = await replayStore.storageEstimate();
+      if (est && est.quota > 0) {
+        const used = items.reduce((n, m) => n + m.sizeBytes, 0);
+        storageLine = `${items.length} replay${items.length === 1 ? "" : "s"} · ${(
+          used /
+          (1 << 20)
+        ).toFixed(1)} MB · newest ${replayStore.MAX_REPLAYS} unpinned are kept`;
+      }
+    } catch (e) {
+      notice = notice || `replay storage unavailable: ${e instanceof Error ? e.message : e}`;
+    }
+    library.show(
+      items,
+      {
+        onWatch: (id) => void openReplay(id),
+        onPin: async (id, pinned) => {
+          await replayStore.setPinned(id, pinned).catch(() => {});
+          void openLibrary();
+        },
+        onDelete: async (id) => {
+          await replayStore.deleteReplay(id).catch(() => {});
+          void openLibrary();
+        },
+        onSaveFile: async (id) => {
+          const meta = items.find((m) => m.id === id);
+          const blob = await replayStore.getReplayBlob(id).catch(() => null);
+          if (blob && meta) {
+            downloadBlob(blob, replayFilename(meta.header, "szr"));
+          }
+        },
+        onImport: async (file) => {
+          try {
+            await replayStore.importReplayFile(file);
+            void openLibrary();
+          } catch (e) {
+            void openLibrary(`import failed: ${e instanceof Error ? e.message : e}`);
+          }
+        },
+        onBack: () => showMenu(),
+      },
+      { notice, storageLine, currentBuildId: BUILD_ID },
+    );
+  };
+
+  /** Load a stored replay and hand the frame loop to a ReplayPlayer. */
+  const openReplay = async (id: string) => {
+    client?.destroy();
+    client = null;
+    try {
+      const blob = await replayStore.getReplayBlob(id);
+      if (!blob) throw new Error("replay not found");
+      const dataset = await ReplayDataset.load(blob);
+      const viewer = new ReplayViewerUI(document.getElementById("ui")!);
+      const player = new ReplayPlayer(dataset, renderer, input, viewer, () => {
+        client = null;
+        void openLibrary();
+      });
+      client = player;
+      (window as unknown as Record<string, unknown>).__replay = player;
+    } catch (e) {
+      void openLibrary(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const showMenu = (error = "") => {
     document.exitPointerLock?.();
     touch?.hide();
@@ -129,6 +213,7 @@ async function main() {
                 renderer.applyQuality(q);
               },
             }),
+      () => void openLibrary(),
     );
   };
 
@@ -136,10 +221,18 @@ async function main() {
     ui.showConnecting();
     touch?.show();
     client?.destroy();
-    client = new GameClient(code, name, renderer, input, ui, (reason) => {
-      client = null;
-      showMenu(reason);
-    });
+    client = new GameClient(
+      code,
+      name,
+      renderer,
+      input,
+      ui,
+      (reason) => {
+        client = null;
+        showMenu(reason);
+      },
+      (replayId) => void openReplay(replayId),
+    );
     // Dev/test hooks (harmless in production).
     (window as unknown as Record<string, unknown>).__input = input;
     (window as unknown as Record<string, unknown>).__gc = client;

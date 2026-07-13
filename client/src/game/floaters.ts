@@ -83,6 +83,14 @@ export class Floaters {
     (f.sprite.material as THREE.SpriteMaterial).opacity = 1;
   }
 
+  /** Hide every live floater immediately (replay seeks). */
+  clear() {
+    for (const f of this.items) {
+      f.life = 0;
+      f.sprite.visible = false;
+    }
+  }
+
   update(dtSec: number) {
     for (const f of this.items) {
       if (f.life <= 0) continue;

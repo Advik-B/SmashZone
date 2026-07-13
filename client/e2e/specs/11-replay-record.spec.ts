@@ -2,7 +2,6 @@
 // IndexedDB replay library (window.__replayStore dev hook) at MatchEnd, or as
 // a partial replay when the session ends mid-match.
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Page } from "playwright";
 import {
   closeGamePages,
   createRoom,
@@ -13,44 +12,9 @@ import {
   suicideRound,
   waitPhase,
 } from "../helpers/game";
+import { listReplays, waitReplayCount } from "../helpers/replay";
 
 afterEach(closeGamePages);
-
-interface StoredReplay {
-  id: string;
-  pinned: boolean;
-  sizeBytes: number;
-  header: {
-    partial: boolean;
-    joinedMidMatch: boolean;
-    code: string;
-    localPlayerId: number;
-    startTick: number;
-    endTick: number;
-    players: { id: number; name: string }[];
-    result: { winner: number } | null;
-    rounds: { round: number; endTick: number | null }[];
-    markers: { kind: string; player: number; tick: number }[];
-  };
-}
-
-function listReplays(page: Page): Promise<StoredReplay[]> {
-  return page.evaluate(() =>
-    (window as any).__replayStore.listReplays(),
-  ) as Promise<StoredReplay[]>;
-}
-
-async function waitReplayCount(page: Page, n: number): Promise<StoredReplay[]> {
-  await page.waitForFunction(
-    async (want) => {
-      const list = await (window as any).__replayStore.listReplays();
-      return list.length === want;
-    },
-    n,
-    { timeout: 15_000, polling: 250 },
-  );
-  return listReplays(page);
-}
 
 describe("replay recording", () => {
   test("a finished match is saved with rounds, KO markers and the result", async () => {

@@ -150,6 +150,7 @@ export class GameClient {
     private input: InputManager,
     private ui: UI,
     private onExit: (reason: string) => void,
+    private onWatchReplay: ((replayId: string) => void) | null = null,
   ) {
     this.recorder = new ReplayRecorder(() => ({
       yaw: this.input.camYaw,
@@ -213,6 +214,10 @@ export class GameClient {
       onRematch: () => this.conn.send(encode_rematch()),
       onAddBot: (difficulty: number) => this.conn.send(encode_add_bot(difficulty)),
       onRemoveBot: (id: number) => this.conn.send(encode_remove_bot(id)),
+      onWatchReplay:
+        this.onWatchReplay && this.lastReplay?.id
+          ? () => this.onWatchReplay!(this.lastReplay!.id!)
+          : null,
     };
   }
 
