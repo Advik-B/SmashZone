@@ -76,28 +76,45 @@ Netcode details:
 ## Development
 
 ```bash
-# prerequisites: rust (+ wasm32 target), wasm-pack, node 20+
+# prerequisites: rust (+ wasm32 target), wasm-pack, bun 1.2+
 
 # 1. build the wasm sim (rerun after touching crates/sim*, crates/protocol)
-cd client && npm install && npm run wasm
+cd client && bun install && bun run wasm
 
 # 2. build the client bundle (the server embeds client/dist at compile time
 #    and re-embeds automatically when it changes)
-cd client && npm run build
+cd client && bun run build
 
 # 3. run the server — play at http://localhost:8080
 cargo run -p gameserver
 
 # or iterate on the client with hot reload at http://localhost:5173
 # (proxies /api and /ws to :8080)
-cd client && npm run dev
+cd client && bun run dev
 ```
 
-Tests (deterministic sim + protocol round-trips):
+## Tests
+
+Rust tests cover the deterministic sim, protocol round-trips, room/netcode
+lifecycle, and bot AI (including tier winrate proofs):
 
 ```bash
-cargo test -p sim -p protocol
+cargo test
 ```
+
+Browser integration tests drive the real game (compiled server + embedded
+client) headlessly with Playwright, covering menu/lobby/match flow, movement,
+combat, arena shrink, pickups, HUD, spectating, and reconnection:
+
+```bash
+cd client && bun run test:e2e     # builds wasm + client + server, runs the suite
+```
+
+Useful knobs: `SKIP_BUILD=1` reuses existing builds; `E2E_BASE_URL=http://localhost:8080`
+runs the specs against an already-running server (e.g. a single spec via
+`bun test e2e/specs/05-combat.spec.ts --timeout 120000`); `PW_CHROMIUM=/path/to/chrome`
+overrides the browser binary (otherwise the suite uses Playwright's installed
+Chromium — `bunx playwright install chromium` once if you have none).
 
 ## Deployment
 
@@ -107,7 +124,7 @@ executable at compile time, so shipping is: build, copy one file, run.
 
 ```bash
 # build the frontend, then the self-contained server binary
-cd client && npm install && npm run wasm && npm run build && cd ..
+cd client && bun install && bun run wasm && bun run build && cd ..
 cargo build --release -p gameserver
 
 # ship it — no other files needed on the server
