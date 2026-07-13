@@ -57,12 +57,12 @@ fn main() {
     } else if env::var("PROFILE").as_deref() == Ok("release") {
         panic!(
             "client/dist/index.html not found — release builds embed the web client.\n\
-             Build it first:  cd client && npm install && npm run wasm && npm run build"
+             Build it first:  cd client && bun install && bun run wasm && bun run build"
         );
     } else {
         println!(
             "cargo:warning=client/dist not built; server will have no embedded web client \
-             (fine for `cargo test`, run `npm run build` in client/ to fix)"
+             (fine for `cargo test`, run `bun run build` in client/ to fix)"
         );
     }
 

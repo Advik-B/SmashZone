@@ -10,14 +10,14 @@ COPY shared ./shared
 RUN wasm-pack build crates/sim-wasm --target web \
     --out-dir /app/client/src/wasm/pkg --release
 
-FROM node:22-slim AS client-builder
+FROM oven/bun:1-slim AS client-builder
 WORKDIR /app
-COPY client/package.json client/package-lock.json* ./client/
-RUN cd client && npm install
+COPY client/package.json client/bun.lock ./client/
+RUN cd client && bun install --frozen-lockfile
 COPY client ./client
 COPY shared ./shared
 COPY --from=wasm-builder /app/client/src/wasm/pkg ./client/src/wasm/pkg
-RUN cd client && npm run build
+RUN cd client && bun run build
 
 # ---- Stage 2: build the game server (embeds client/dist via build.rs) ----
 FROM rust:1.85-slim AS server-builder

@@ -1,0 +1,5 @@
+[test]
+# Only the integration suite lives under e2e/; a bare `bun test` in client/
+# should never wander into src or node_modules.
+root = "e2e"
+preload = ["./e2e/setup.ts"]
