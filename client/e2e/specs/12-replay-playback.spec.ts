@@ -127,6 +127,28 @@ describe("replay playback", () => {
     expect(st.playing).toBe(false);
     expect(st.playhead).toBeLessThan(st.end);
 
+    // Free-fly camera: WASD actually flies the camera while paused.
+    const camPos = () =>
+      host.page.evaluate(() => {
+        const c = (window as any).__replay.renderer.camera.position;
+        return { x: c.x, y: c.y, z: c.z };
+      }) as Promise<{ x: number; y: number; z: number }>;
+    await host.page.evaluate(() => (window as any).__replay.setCameraMode("free"));
+    const c1 = await camPos();
+    await host.page.keyboard.down("w");
+    await host.page.waitForTimeout(400);
+    await host.page.keyboard.up("w");
+    const c2 = await camPos();
+    expect(Math.hypot(c2.x - c1.x, c2.y - c1.y, c2.z - c1.z)).toBeGreaterThan(1);
+
+    // Follow another player from the picker; player-view mode renders too.
+    await host.page.click(`.rv-pchip[data-id="${bravoId}"]`);
+    st = await replayState(host.page);
+    expect(st.follow).toBe(bravoId);
+    await host.page.evaluate(() => (window as any).__replay.setCameraMode("playerview"));
+    await host.page.waitForTimeout(250);
+    await host.page.evaluate(() => (window as any).__replay.setCameraMode("follow"));
+
     // Back to the library.
     await host.page.click("#rv-back");
     await host.page.waitForSelector(".rl-list", { timeout: 10_000 });

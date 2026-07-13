@@ -1206,6 +1206,24 @@ body {
   border-color: #7d8aff;
 }
 
+.rv-cams {
+  display: flex;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.rv-controls .rv-cam {
+  font-size: 12px;
+  padding: 5px 8px;
+  opacity: 0.75;
+}
+
+.rv-controls .rv-cam.active {
+  opacity: 1;
+  background: #3a4374;
+  border-color: #7d8aff;
+}
+
 .rv-time {
   margin-left: auto;
   font-variant-numeric: tabular-nums;

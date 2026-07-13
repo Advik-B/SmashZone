@@ -341,6 +341,11 @@ export class ReplayViewerUI {
             (s) =>
               `<button class="rv-speed ${s === 1 ? "active" : ""}" data-speed="${s}">${s}×</button>`,
           ).join("")}</div>
+          <div class="rv-cams">
+            <button class="rv-cam active" data-cam="follow" title="orbit the followed player (1)">FOLLOW</button>
+            <button class="rv-cam" data-cam="free" title="fly camera: WASD + Space/Shift, scroll = speed (2)">FREE</button>
+            <button class="rv-cam" data-cam="playerview" title="what they saw — exact for the recording player, approximate for others (3)">POV</button>
+          </div>
           <div id="rv-time" class="rv-time">0:00</div>
           <div class="rv-players" id="rv-players">${followChips}</div>
         </div>
@@ -369,6 +374,10 @@ export class ReplayViewerUI {
         for (const o of this.root.querySelectorAll(".rv-speed")) o.classList.remove("active");
         b.classList.add("active");
       };
+    }
+
+    for (const b of this.root.querySelectorAll<HTMLButtonElement>(".rv-cam")) {
+      b.onclick = () => this.pickCamera(b.dataset.cam as "follow" | "free" | "playerview");
     }
 
     for (const b of this.root.querySelectorAll<HTMLButtonElement>(".rv-pchip")) {
@@ -421,6 +430,13 @@ export class ReplayViewerUI {
     });
   }
 
+  private pickCamera(mode: "follow" | "free" | "playerview") {
+    this.player?.setCameraMode(mode);
+    for (const o of this.root.querySelectorAll(".rv-cam")) {
+      o.classList.toggle("active", (o as HTMLElement).dataset.cam === mode);
+    }
+  }
+
   private onKey(e: KeyboardEvent) {
     const p = this.player;
     if (!p) return;
@@ -446,6 +462,15 @@ export class ReplayViewerUI {
         break;
       case "n":
         p.jumpToMarker(1);
+        break;
+      case "1":
+        this.pickCamera("follow");
+        break;
+      case "2":
+        this.pickCamera("free");
+        break;
+      case "3":
+        this.pickCamera("playerview");
         break;
       default:
         return;

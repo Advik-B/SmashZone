@@ -15,6 +15,7 @@ import { ANIM_DANCE } from "../game/players";
 import type { InputManager } from "../game/input";
 import type { Renderer } from "../game/renderer";
 import { ANIM, type GameEvent, type Phase, type Vec3 } from "../net/messages";
+import { ReplayCameraRig, type ReplayCameraMode } from "./cameras";
 import { GAP_TICKS, type ReplayDataset } from "./dataset";
 import type { ReplayViewerUI } from "./replayui";
 
@@ -25,8 +26,6 @@ const SFX_MAX_SPEED = 2;
 const EVENT_BURST_CAP = 32;
 
 export const REPLAY_SPEEDS = [0.25, 0.5, 1, 2, 4] as const;
-
-export type ReplayCameraMode = "follow" | "free" | "playerview";
 
 export class ReplayPlayer {
   destroyed = false;
@@ -45,7 +44,9 @@ export class ReplayPlayer {
   private streaks = new Map<number, number>();
   private followTarget: number;
   private lastFocus: Vec3 = [0, 2, 0];
+  private lastFocusYaw = 0;
   private lastCountdown = -1;
+  private rig: ReplayCameraRig;
 
   constructor(
     readonly dataset: ReplayDataset,
@@ -58,6 +59,8 @@ export class ReplayPlayer {
     this.playhead = dataset.startTick;
     this.eventCursor = dataset.eventIndexAfter(dataset.startTick);
     this.followTarget = dataset.header.localPlayerId;
+    this.rig = new ReplayCameraRig(renderer.canvas, input, renderer.camera);
+    this.rig.attach();
     this.input.reset();
     this.renderer.reset();
     this.renderer.setTiles(this.sim.tile_centers());
@@ -71,6 +74,7 @@ export class ReplayPlayer {
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.rig.detach();
     this.ui.unmount();
     this.renderer.setCameraOverride(null);
     this.renderer.clearTransients();
@@ -107,6 +111,16 @@ export class ReplayPlayer {
     return this.followTarget;
   }
 
+  get cameraMode(): ReplayCameraMode {
+    return this.rig.mode;
+  }
+
+  setCameraMode(mode: ReplayCameraMode) {
+    this.rig.setMode(mode);
+    this.renderer.snapCamera();
+    if (mode !== "free") this.renderer.setCameraOverride(null);
+  }
+
   play() {
     if (this.playhead >= this.dataset.endTick) this.seek(this.dataset.startTick);
     this.playing = true;
@@ -127,6 +141,8 @@ export class ReplayPlayer {
 
   setFollowTarget(id: number) {
     this.followTarget = id;
+    this.rig.resetPlayerView();
+    this.renderer.snapCamera();
   }
 
   /** Absolute seek. State rebuilds silently; crossed events never re-fire. */
@@ -137,6 +153,7 @@ export class ReplayPlayer {
     this.lastHitBy.clear();
     this.streaks.clear();
     this.renderer.clearTransients();
+    this.rig.resetPlayerView();
     this.ui.clearFeed();
     this.syncRoster(true);
     this.applyArena(true);
@@ -229,7 +246,10 @@ export class ReplayPlayer {
         pb.grounded,
       );
       this.renderer.setPlayerDamage(pb.id, pb.damage);
-      if (pb.id === this.followTarget && pb.alive) this.lastFocus = pos;
+      if (pb.id === this.followTarget && pb.alive) {
+        this.lastFocus = pos;
+        this.lastFocusYaw = yaw;
+      }
     }
 
     this.renderer.setPickups(a.pickups);
@@ -249,7 +269,26 @@ export class ReplayPlayer {
     this.renderer.updateTiles(this.sim.tile_states());
     this.updateChrome(phase);
 
-    this.renderer.render(dtSec, this.lastFocus, this.input.camYaw, this.input.camPitch);
+    switch (this.rig.mode) {
+      case "free": {
+        this.renderer.setCameraOverride(this.rig.updateFree(dtSec));
+        this.renderer.render(dtSec, this.lastFocus, 0, 0);
+        break;
+      }
+      case "playerview": {
+        const pv = this.rig.playerViewAngles(
+          this.dataset,
+          this.playhead,
+          this.followTarget,
+          this.lastFocusYaw,
+          dtSec,
+        );
+        this.renderer.render(dtSec, this.lastFocus, pv.yaw, pv.pitch);
+        break;
+      }
+      default:
+        this.renderer.render(dtSec, this.lastFocus, this.input.camYaw, this.input.camPitch);
+    }
     this.ui.tick();
   }
 
