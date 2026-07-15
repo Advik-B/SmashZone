@@ -17,6 +17,7 @@ import type { Renderer } from "../game/renderer";
 import { ANIM, type GameEvent, type Phase, type Vec3 } from "../net/messages";
 import { ReplayCameraRig, type ReplayCameraMode } from "./cameras";
 import { GAP_TICKS, type ReplayDataset } from "./dataset";
+import { exportVideo, type ExportHandle, type ExportRequest } from "./export";
 import type { ReplayViewerUI } from "./replayui";
 
 const TICK_MS = 1000 / constants.tickRate;
@@ -239,11 +240,13 @@ export class ReplayPlayer {
     this.exporting = false;
   }
 
-  /** Kick off a video export; the module loads on demand (code-split). */
-  async startExport(
-    opts: import("./export").ExportRequest,
-  ): Promise<import("./export").ExportHandle> {
-    const { exportVideo } = await import("./export");
+  /**
+   * Kick off a video export. Synchronous on purpose: the caller (and the e2e
+   * hook) reads playheadTick immediately before this, and exportVideo captures
+   * that same tick to restore afterward — an awaited import here would let the
+   * still-playing replay advance in between, breaking the restore.
+   */
+  startExport(opts: ExportRequest): ExportHandle {
     const handle = exportVideo(this, opts);
     void handle.done
       .then((blob) => {

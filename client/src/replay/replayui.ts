@@ -7,10 +7,7 @@
 
 import { get } from "svelte/store";
 import { colorOf } from "../ui/util";
-// Type-only: keeps export.ts (and its mp4 pipeline) out of this module's static
-// graph so player.ts's dynamic import can code-split it. ExportCancelled is
-// pulled in lazily where it's actually needed (the catch below).
-import type { ExportHandle, ExportRequest } from "./export";
+import { ExportCancelled, type ExportHandle, type ExportRequest } from "./export";
 import { downloadBlob, replayFilename } from "./download";
 import { BUILD_ID, type ReplayMarker } from "./format";
 import type { ReplayMeta } from "./store";
@@ -439,7 +436,7 @@ export class ReplayViewerUI {
       req.mode === "webm" ? "recording in real time — keep this tab visible…" : "rendering…",
     );
     try {
-      this.exportHandle = await p.startExport(req);
+      this.exportHandle = p.startExport(req);
       const blob = await this.exportHandle.done;
       const ext = blob.type.includes("mp4") ? "mp4" : "webm";
       const name = sel.name.trim() ? `${sel.name.trim()}.${ext}` : replayFilename(p.dataset.header, ext);
@@ -447,8 +444,6 @@ export class ReplayViewerUI {
       S.exStatus.set("saved!");
       setTimeout(() => this.closeExport(), 900);
     } catch (e) {
-      // export.ts is already loaded by startExport; this import is cached.
-      const { ExportCancelled } = await import("./export");
       if (e instanceof ExportCancelled) {
         this.closeExport();
       } else {
