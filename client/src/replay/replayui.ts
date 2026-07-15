@@ -7,7 +7,11 @@
 
 import { get } from "svelte/store";
 import { colorOf } from "../ui/util";
-import { ExportCancelled, webCodecsAvailable, type ExportHandle, type ExportRequest } from "./export";
+// Type-only: keeps export.ts (and its mp4 pipeline) out of this module's static
+// graph so player.ts's dynamic import can code-split it. ExportCancelled is
+// pulled in lazily where it's actually needed (the catch below).
+import type { ExportHandle, ExportRequest } from "./export";
+import { downloadBlob, replayFilename } from "./download";
 import { BUILD_ID, type ReplayMarker } from "./format";
 import type { ReplayMeta } from "./store";
 import type { ReplayDataset } from "./dataset";
@@ -16,20 +20,8 @@ import { REPLAY_SPEEDS } from "./player";
 import { POWERUP_NAMES } from "../net/messages";
 import * as S from "../ui/app/stores";
 
-/** Trigger a browser download of a Blob. */
-export function downloadBlob(blob: Blob, filename: string): void {
-  const a = document.createElement("a");
-  const url = URL.createObjectURL(blob);
-  a.href = url;
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
-
-export function replayFilename(meta: { code: string; createdAt: string }, ext: string): string {
-  const stamp = meta.createdAt.slice(0, 19).replace(/[T:]/g, "-");
-  return `smashzone-${meta.code}-${stamp}.${ext}`;
-}
+// Re-export so main.ts's existing `from "./replay/replayui"` import is unchanged.
+export { downloadBlob, replayFilename };
 
 function fmtTicks(ticks: number): string {
   const s = Math.max(0, Math.floor(ticks / 60));
@@ -313,7 +305,7 @@ export class ReplayViewerUI {
     const ds = p.dataset;
     const players = ds.allPlayers();
     const targetName = players.find((x) => x.id === p.followTargetId)?.name ?? "player";
-    const canMp4 = webCodecsAvailable();
+    const canMp4 = typeof VideoEncoder !== "undefined" && typeof VideoFrame !== "undefined";
     const span = Math.max(1, ds.endTick - ds.startTick);
     const koPcts = ds.markers
       .filter((m) => m.kind === "ko")
@@ -455,6 +447,8 @@ export class ReplayViewerUI {
       S.exStatus.set("saved!");
       setTimeout(() => this.closeExport(), 900);
     } catch (e) {
+      // export.ts is already loaded by startExport; this import is cached.
+      const { ExportCancelled } = await import("./export");
       if (e instanceof ExportCancelled) {
         this.closeExport();
       } else {

@@ -42,6 +42,7 @@ import { ANIM_DANCE } from "../game/players";
 import type { Renderer } from "../game/renderer";
 import type { InputManager } from "../game/input";
 import { type PhaseCtx, type UI } from "../ui/ui";
+import { downloadBlob, replayFilename } from "../replay/download";
 
 const TICK_MS = 1000 / constants.tickRate;
 const INTERP_TICKS = (constants.interpDelayMs / 1000) * constants.tickRate;
@@ -222,9 +223,7 @@ export class GameClient {
         this.lastReplay && !this.lastReplay.id
           ? () => {
               const r = this.lastReplay!;
-              void import("../replay/replayui").then(({ downloadBlob, replayFilename }) =>
-                downloadBlob(r.blob, replayFilename(r.header, "szr")),
-              );
+              downloadBlob(r.blob, replayFilename(r.header, "szr"));
             }
           : null,
     };

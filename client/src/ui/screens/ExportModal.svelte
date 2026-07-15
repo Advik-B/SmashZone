@@ -3,27 +3,35 @@
   import { exExporting, exProgress, exStatus, exPreviewing, exPreviewTime, exNote } from "../app/stores";
   import Icon from "../components/Icon.svelte";
   import Keycap from "../components/Keycap.svelte";
+  import { untrack } from "svelte";
 
   let { data }: { data: ExportModalState } = $props();
 
   const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-  const total = Math.max(1, data.endTick - data.startTick);
-  const pct = (tick: number) => (clamp(tick, data.startTick, data.endTick) - data.startTick) / total * 100;
+  // Bounds + initial selection are fixed for the modal's lifetime; snapshot once.
+  const init = untrack(() => ({
+    start: data.startTick,
+    end: data.endTick,
+    inTick: data.inTick,
+    outTick: data.outTick,
+    name: data.defaultName,
+    sel: Object.fromEntries(data.groups.map((g) => [g.key, g.initial])) as Record<string, string>,
+  }));
+  const total = Math.max(1, init.end - init.start);
+  const pct = (tick: number) => ((clamp(tick, init.start, init.end) - init.start) / total) * 100;
 
-  let inTick = $state(data.inTick);
-  let outTick = $state(data.outTick);
-  let name = $state(data.defaultName);
-  let sel = $state<Record<string, string>>(
-    Object.fromEntries(data.groups.map((g) => [g.key, g.initial])),
-  );
+  let inTick = $state(init.inTick);
+  let outTick = $state(init.outTick);
+  let name = $state(init.name);
+  let sel = $state<Record<string, string>>(init.sel);
 
-  let strip: HTMLDivElement;
+  let strip = $state<HTMLDivElement>();
   let dragging: "in" | "out" | null = null;
 
   function stripTick(e: PointerEvent): number {
-    const r = strip.getBoundingClientRect();
+    const r = strip!.getBoundingClientRect();
     const f = clamp((e.clientX - r.left) / r.width, 0, 1);
-    return Math.round(data.startTick + f * total);
+    return Math.round(init.start + f * total);
   }
   function onHandleDown(which: "in" | "out", e: PointerEvent) {
     e.stopPropagation();
@@ -32,8 +40,8 @@
   function onMove(e: PointerEvent) {
     if (!dragging) return;
     const t = stripTick(e);
-    if (dragging === "in") inTick = clamp(t, data.startTick, outTick - 1);
-    else outTick = clamp(t, inTick + 1, data.endTick);
+    if (dragging === "in") inTick = clamp(t, init.start, outTick - 1);
+    else outTick = clamp(t, inTick + 1, init.end);
     data.onPreviewSeek(dragging === "in" ? inTick : outTick);
   }
   function onUp() {

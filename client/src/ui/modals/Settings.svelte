@@ -5,18 +5,28 @@
   import Icon from "../components/Icon.svelte";
   import Keycap from "../components/Keycap.svelte";
   import { focusOnMount } from "../app/actions";
+  import { untrack } from "svelte";
 
   let { data }: { data: SettingsState } = $props();
 
   const modes: InputMode[] = ["pointer", "keyboard"];
   const qualities: Quality[] = ["low", "medium", "high"];
 
-  let vol = $state(Math.round(data.volume * 100));
-  let muted = $state(data.muted);
-  let mvol = $state(Math.round(data.musicVolume * 100));
-  let mmuted = $state(data.musicMuted);
-  let quality = $state<Quality>(data.quality);
-  let record = $state(data.recordReplays);
+  // Seed local controls from the props once (this modal is remounted per open).
+  const init = untrack(() => ({
+    vol: Math.round(data.volume * 100),
+    muted: data.muted,
+    mvol: Math.round(data.musicVolume * 100),
+    mmuted: data.musicMuted,
+    quality: data.quality,
+    record: data.recordReplays,
+  }));
+  let vol = $state(init.vol);
+  let muted = $state(init.muted);
+  let mvol = $state(init.mvol);
+  let mmuted = $state(init.mmuted);
+  let quality = $state<Quality>(init.quality);
+  let record = $state(init.record);
 
   function pickMode(m: InputMode) {
     data.onPickMode(m);

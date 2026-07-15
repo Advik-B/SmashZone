@@ -18,5 +18,15 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
+    // three.js is ~600 kB on its own and unavoidable; give it a long-cached
+    // vendor chunk and lift the warning threshold above it.
+    chunkSizeWarningLimit: 1600,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/three")) return "three";
+        },
+      },
+    },
   },
 });
