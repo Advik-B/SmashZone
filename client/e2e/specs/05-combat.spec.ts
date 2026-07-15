@@ -135,7 +135,10 @@ describe("combat", () => {
         const gc = (window as any).__gc;
         const input = (window as any).__input;
         const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-        const deadline = Date.now() + 8000;
+        // Generous window: under the full parallel suite (16 files sharing the
+        // CPU) the render/predict loop slows, so give the two combo hits room
+        // to land. Well under the 120 s per-test timeout.
+        const deadline = Date.now() + 20000;
         while (Date.now() < deadline) {
           const me = gc.renderer.playerPos(gc.myId);
           const t = gc.renderer.playerPos(tid);
