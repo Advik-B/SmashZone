@@ -36,6 +36,9 @@ import {
 } from "./replay/replayui";
 import * as replayStore from "./replay/store";
 import { UI } from "./ui/ui";
+import { mount } from "svelte";
+import App from "./ui/app/App.svelte";
+import "./ui/theme.css";
 
 async function createRoom(): Promise<string> {
   const res = await fetch("/api/rooms", { method: "POST" });
@@ -68,6 +71,9 @@ async function main() {
   input.setMode(savedInputMode());
   const touch = isTouchDevice() ? new TouchControls(input) : null;
   const ui = new UI();
+  // The whole DOM overlay is a Svelte app mounted once into #ui; the controllers
+  // above/below drive it through stores.
+  mount(App, { target: document.getElementById("ui")! });
 
   // Whatever currently owns the frame loop: a live GameClient or (later) a
   // replay player. Both expose the same frame/destroy shape.

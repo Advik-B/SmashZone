@@ -1,18 +1,20 @@
-// Replay chrome: the library screen (list / watch / pin / delete / import /
-// save-as-file) and the viewer's timeline bar (scrubber with KO/hit/pickup
-// markers, round chips, transport controls, speed pills, follow picker).
-// Both screens own #ui the same way the live UI does — innerHTML swaps plus
-// getElementById wiring — and reuse the HUD's ids (#h-feed, #h-center,
-// #h-flash) so the existing kill-feed/banner/flash styles apply untouched.
+// Replay chrome — controllers that translate the engine's imperative calls into
+// Svelte store writes. They keep the exact public method shapes ReplayPlayer and
+// main.ts depend on (mount/unmount/tick/addFeed/clearFeed/setCenter/flash on the
+// viewer; show() on the library) so the replay engine itself is untouched; the
+// actual DOM is rendered by ReplayLibrary.svelte / ReplayViewerBar.svelte /
+// ExportModal.svelte from the stores written here.
 
-import { POWERUP_NAMES } from "../net/messages";
-import { colorOf, esc } from "../ui/ui";
-import { ExportCancelled, webCodecsAvailable, type ExportRequest } from "./export";
+import { get } from "svelte/store";
+import { colorOf } from "../ui/util";
+import { ExportCancelled, webCodecsAvailable, type ExportHandle, type ExportRequest } from "./export";
 import { BUILD_ID, type ReplayMarker } from "./format";
 import type { ReplayMeta } from "./store";
 import type { ReplayDataset } from "./dataset";
 import type { ReplayPlayer } from "./player";
 import { REPLAY_SPEEDS } from "./player";
+import { POWERUP_NAMES } from "../net/messages";
+import * as S from "../ui/app/stores";
 
 /** Trigger a browser download of a Blob. */
 export function downloadBlob(blob: Blob, filename: string): void {
@@ -39,6 +41,8 @@ function fmtSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+const MARKER_GLYPH: Record<string, string> = { ko: "✖", pickup: "◆", boom: "●" };
+
 // ---------------------------------------------------------------------------
 // Library screen
 
@@ -52,104 +56,54 @@ export interface LibraryCallbacks {
 }
 
 export class ReplayLibraryUI {
-  constructor(private root: HTMLElement) {}
+  // `_root` kept only so main.ts's `new ReplayLibraryUI(#ui)` call is unchanged.
+  constructor(_root: HTMLElement) {}
 
   show(
     items: ReplayMeta[],
     cbs: LibraryCallbacks,
     opts: { notice?: string; storageLine?: string; currentBuildId?: string } = {},
   ) {
-    const rows = items
-      .map((m) => {
-        const h = m.header;
-        const when = new Date(m.savedAt);
-        const date = `${when.toLocaleDateString()} ${when.toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })}`;
-        const chips = h.players
-          .map(
-            (p) =>
-              `<span class="rl-chip" style="--slot:${colorOf(p.slot)}">${esc(p.name)}</span>`,
-          )
-          .join("");
-        const winner =
-          h.result !== null
-            ? esc(h.players.find((p) => p.id === h.result!.winner)?.name ?? "?")
-            : null;
-        const badges = [
-          h.partial ? `<span class="rl-badge rl-partial">PARTIAL</span>` : "",
-          opts.currentBuildId && h.buildId !== opts.currentBuildId
-            ? `<span class="rl-badge rl-oldbuild" title="recorded on build ${esc(h.buildId)} — playback may be wrong">OTHER BUILD</span>`
-            : "",
-          m.pinned ? `<span class="rl-badge rl-pinned">PINNED</span>` : "",
-        ].join("");
-        return `
-        <div class="rl-row" data-id="${m.id}">
-          <div class="rl-info">
-            <div class="rl-line1">
-              <b>ROOM ${esc(h.code)}</b> · ${date} · ${fmtTicks(h.endTick - h.startTick)}
-              · ${fmtSize(m.sizeBytes)} ${badges}
-            </div>
-            <div class="rl-line2">${chips}${
-              winner ? `<span class="rl-winner">🏆 ${winner}</span>` : ""
-            }</div>
-          </div>
-          <div class="rl-actions">
-            <button class="rl-watch">WATCH</button>
-            <button class="rl-pin secondary" title="pinned replays never auto-delete">${
-              m.pinned ? "UNPIN" : "PIN"
-            }</button>
-            <button class="rl-save secondary" title="download as .szr file">SAVE</button>
-            <button class="rl-del secondary" title="delete replay">✕</button>
-          </div>
-        </div>`;
-      })
-      .join("");
-
-    this.root.innerHTML = `
-      <div class="menu replay-lib">
-        <h1 class="rl-title">REPLAYS</h1>
-        <div class="error">${esc(opts.notice ?? "")}</div>
-        <div class="rl-list">${
-          rows ||
-          `<div class="hint rl-empty">no replays yet — finish a match and it lands here automatically<br/>(the newest 10 are kept; pin the ones you love)</div>`
-        }</div>
-        <div class="rl-footer">
-          <button id="rl-back" class="secondary">← BACK</button>
-          <label class="rl-import secondary" for="rl-file">IMPORT .szr</label>
-          <input id="rl-file" type="file" accept=".szr" style="display:none" />
-          <span class="hint">${esc(opts.storageLine ?? "")}</span>
-        </div>
-      </div>`;
-
-    (document.getElementById("rl-back") as HTMLButtonElement).onclick = cbs.onBack;
-    const file = document.getElementById("rl-file") as HTMLInputElement;
-    file.onchange = () => {
-      const f = file.files?.[0];
-      if (f) cbs.onImport(f);
-      file.value = "";
-    };
-    for (const row of this.root.querySelectorAll<HTMLElement>(".rl-row")) {
-      const id = row.dataset.id!;
-      const meta = items.find((m) => m.id === id)!;
-      row.querySelector<HTMLButtonElement>(".rl-watch")!.onclick = () => cbs.onWatch(id);
-      row.querySelector<HTMLButtonElement>(".rl-pin")!.onclick = () =>
-        cbs.onPin(id, !meta.pinned);
-      row.querySelector<HTMLButtonElement>(".rl-save")!.onclick = () => cbs.onSaveFile(id);
-      row.querySelector<HTMLButtonElement>(".rl-del")!.onclick = () => cbs.onDelete(id);
-    }
+    const rows: S.ReplayRow[] = items.map((m) => {
+      const h = m.header;
+      const when = new Date(m.savedAt);
+      const date = `${when.toLocaleDateString()} ${when.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      })}`;
+      const line1 = `ROOM ${h.code} · ${date} · ${fmtTicks(h.endTick - h.startTick)} · ${fmtSize(
+        m.sizeBytes,
+      )}`;
+      const winner =
+        h.result !== null ? (h.players.find((p) => p.id === h.result!.winner)?.name ?? "?") : null;
+      return {
+        id: m.id,
+        line1,
+        chips: h.players.map((p) => ({ color: colorOf(p.slot) })),
+        winner,
+        pinned: m.pinned,
+        partial: h.partial,
+        otherBuild: !!(opts.currentBuildId && h.buildId !== opts.currentBuildId),
+        otherBuildTitle: `recorded on build ${h.buildId} — playback may be wrong`,
+        onWatch: () => cbs.onWatch(m.id),
+        onPin: () => cbs.onPin(m.id, !m.pinned),
+        onSave: () => cbs.onSaveFile(m.id),
+        onDelete: () => cbs.onDelete(m.id),
+      };
+    });
+    S.replayLib.set({
+      rows,
+      notice: opts.notice ?? "",
+      storageLine: opts.storageLine ?? "",
+      onBack: cbs.onBack,
+      onImport: cbs.onImport,
+    });
+    S.screen.set("replayLib");
   }
 }
 
 // ---------------------------------------------------------------------------
 // Viewer chrome
-
-const MARKER_GLYPH: Record<string, string> = {
-  ko: "✖",
-  pickup: "◆",
-  boom: "●",
-};
 
 export class ReplayViewerUI {
   private player: ReplayPlayer | null = null;
@@ -158,119 +112,107 @@ export class ReplayViewerUI {
   private lastTime = "";
   private lastPlaying: boolean | null = null;
   private lastCenter = "";
-  private scrubbing = false;
   private wasPlaying = false;
+  private exportOpen = false;
+  private previewPlaying = false;
+  private previewOut = 0;
+  private exportHandle: ExportHandle | null = null;
 
-  constructor(private root: HTMLElement) {}
+  constructor(_root: HTMLElement) {}
 
   mount(player: ReplayPlayer) {
     this.player = player;
-    const ds = player.dataset;
-    this.build(ds);
+    this.lastFill = -1;
+    this.lastTime = "";
+    this.lastPlaying = null;
+    this.lastCenter = "";
+    S.clearFeed();
+    S.centerTitle.set("");
+    S.centerSub.set("");
+    this.build(player.dataset);
     window.addEventListener("keydown", this.keydown);
   }
 
   unmount() {
     window.removeEventListener("keydown", this.keydown);
     this.player = null;
-    this.root.innerHTML = "";
+    this.exportOpen = false;
+    this.previewPlaying = false;
+    this.exportHandle?.cancel();
+    this.exportHandle = null;
+    S.replayViewer.set(null);
+    S.exportModal.set(null);
+    S.clearFeed();
   }
 
-  // ---- per-frame refresh (cheap: writes only on change) ----
+  // ---- per-frame refresh (writes only on change) ----
 
   tick() {
     const p = this.player;
     if (!p) return;
     const ds = p.dataset;
     const span = Math.max(1, ds.endTick - ds.startTick);
-    const frac = (p.playheadTick - ds.startTick) / span;
-    const fillPct = Math.round(frac * 1000) / 10;
+    const fillPct = Math.round(((p.playheadTick - ds.startTick) / span) * 1000) / 10;
     if (fillPct !== this.lastFill) {
       this.lastFill = fillPct;
-      const fill = document.getElementById("rv-fill");
-      const head = document.getElementById("rv-head");
-      if (fill) fill.style.width = `${fillPct}%`;
-      if (head) head.style.left = `${fillPct}%`;
+      S.rvFill.set(fillPct);
     }
     const time = `${fmtTicks(p.playheadTick - ds.startTick)} / ${fmtTicks(span)}`;
     if (time !== this.lastTime) {
       this.lastTime = time;
-      const el = document.getElementById("rv-time");
-      if (el) el.textContent = time;
+      S.rvTime.set(time);
     }
     if (p.isPlaying !== this.lastPlaying) {
       this.lastPlaying = p.isPlaying;
-      const btn = document.getElementById("rv-play");
-      if (btn) btn.textContent = p.isPlaying ? "❚❚" : "▶";
+      S.rvPlaying.set(p.isPlaying);
     }
+    if (this.exportOpen) this.previewTick();
   }
 
-  // ---- HUD surfaces reused by eventfx ----
+  // ---- HUD surfaces reused by eventfx (shared stores rendered by HudFx) ----
 
   addFeed(html: string) {
-    const el = document.getElementById("h-feed");
-    if (!el) return;
-    const line = document.createElement("div");
-    line.className = "feed-line";
-    line.innerHTML = html;
-    el.appendChild(line);
-    while (el.children.length > 4) el.removeChild(el.firstChild!);
-    setTimeout(() => line.remove(), 4000);
+    S.pushFeed(html);
   }
-
   clearFeed() {
-    const el = document.getElementById("h-feed");
-    if (el) el.innerHTML = "";
+    S.clearFeed();
   }
-
   setCenter(title: string, sub = "") {
-    const center = document.getElementById("h-title");
-    const subEl = document.getElementById("h-sub");
-    if (center && title !== this.lastCenter) {
+    if (title !== this.lastCenter) {
       this.lastCenter = title;
-      center.textContent = title;
-      if (title) {
-        center.classList.remove("center-pop");
-        void center.offsetWidth;
-        center.classList.add("center-pop");
-      }
+      S.centerTitle.set(title);
+      if (title) S.centerBump.update((n) => n + 1);
     }
-    if (subEl) subEl.textContent = sub;
+    S.centerSub.set(sub);
   }
-
   flash(strength = 0.4) {
-    const el = document.getElementById("h-flash");
-    if (!el) return;
-    el.style.setProperty("--flash", String(strength));
-    el.classList.remove("flash-out");
-    void el.offsetWidth;
-    el.classList.add("flash-out");
+    S.flashStrength.set(strength);
+    S.flashBump.update((n) => n + 1);
   }
 
   // ---- construction ----
 
   private build(ds: ReplayDataset) {
     const span = Math.max(1, ds.endTick - ds.startTick);
-    const pct = (tick: number) =>
-      `${(Math.max(0, Math.min(1, (tick - ds.startTick) / span)) * 100).toFixed(2)}%`;
+    const pct = (tick: number) => Math.max(0, Math.min(1, (tick - ds.startTick) / span)) * 100;
     const players = ds.allPlayers();
     const nameOf = (id: number) => players.find((p) => p.id === id)?.name ?? "?";
+    const slotOf = (id: number) => players.find((p) => p.id === id)?.slot ?? 0;
 
-    const markerHtml = (m: ReplayMarker) => {
-      let cls = `rv-marker mk-${m.kind}`;
+    const markers: S.ViewerMarker[] = ds.markers.map((m: ReplayMarker) => {
       let color = "#ffffff";
       let title = "";
       const at = fmtTicks(m.tick - ds.startTick);
       switch (m.kind) {
         case "ko":
-          color = colorOf(players.find((p) => p.id === m.player)?.slot ?? 0);
+          color = colorOf(slotOf(m.player));
           title =
             m.other >= 0
               ? `${nameOf(m.player)} KO'd by ${nameOf(m.other)} · ${at}`
               : `${nameOf(m.player)} fell · ${at}`;
           break;
         case "hit":
-          color = colorOf(players.find((p) => p.id === m.player)?.slot ?? 0);
+          color = colorOf(slotOf(m.player));
           title = `${nameOf(m.player)} smacked ${nameOf(m.other)} (${m.data}) · ${at}`;
           break;
         case "pickup":
@@ -282,295 +224,296 @@ export class ReplayViewerUI {
           title = `bomb blast · ${at}`;
           break;
       }
-      const glyph = MARKER_GLYPH[m.kind] ?? "";
-      return `<div class="${cls}" data-tick="${m.tick}" style="left:${pct(m.tick)};--mk:${color}" title="${esc(
+      return {
+        pct: pct(m.tick),
+        kind: m.kind,
+        color,
         title,
-      )}">${glyph}</div>`;
-    };
+        glyph: MARKER_GLYPH[m.kind] ?? "",
+        tick: m.tick,
+      };
+    });
 
-    const chips = ds.rounds
+    const chips: S.ViewerChip[] = ds.rounds
       .filter((r) => r.countdownTick !== null || r.roundStartTick !== null)
       .map((r) => {
         const start = r.countdownTick ?? r.roundStartTick!;
-        return `<button class="rv-chip" data-tick="${start}" style="left:${pct(start)}">R${r.round}</button>`;
-      })
-      .join("");
+        return { pct: pct(start), label: `R${r.round}`, tick: start };
+      });
 
-    const gaps = ds.gaps
-      .map(
-        (g) =>
-          `<div class="rv-gapmark" title="connection gap" style="left:${pct(g.from)};width:calc(${pct(
-            g.to,
-          )} - ${pct(g.from)})"></div>`,
-      )
-      .join("");
+    const gaps: S.ViewerGap[] = ds.gaps.map((g) => ({
+      leftPct: pct(g.from),
+      widthPct: pct(g.to) - pct(g.from),
+    }));
 
-    const followChips = players
-      .map(
-        (p) => `
-        <button class="rv-pchip ${p.id === this.player!.followTargetId ? "active" : ""}"
-          data-id="${p.id}" style="--slot:${colorOf(p.slot)}" title="follow ${esc(p.name)}">
-          ${esc(p.name)}
-        </button>`,
-      )
-      .join("");
+    const vplayers: S.ViewerPlayer[] = players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      color: colorOf(p.slot),
+    }));
 
     const h = ds.header;
-    this.root.innerHTML = `
-      <div id="h-flash"></div>
-      <div class="hud-room">REPLAY · ROOM ${esc(h.code)}${
-        h.partial ? " · PARTIAL" : ""
-      }</div>
-      ${
-        h.buildId !== BUILD_ID
-          ? `<div class="rv-warn">recorded on build ${esc(h.buildId)} — playback may be wrong</div>`
-          : ""
-      }
-      <div class="hud-feed" id="h-feed"></div>
-      <div class="hud-center" id="h-center"><div id="h-title"></div><div class="hud-sub" id="h-sub"></div></div>
-      <div class="rv-bar">
-        <div class="rv-track" id="rv-track">
-          <div class="rv-chips">${chips}</div>
-          ${gaps}
-          <div class="rv-fill" id="rv-fill"></div>
-          ${ds.markers.map(markerHtml).join("")}
-          <div class="rv-head" id="rv-head"></div>
-        </div>
-        <div class="rv-controls" id="rv-controls">
-          <button id="rv-back" class="secondary" title="back to library (Esc)">←</button>
-          <button id="rv-prev" class="secondary" title="previous KO (p)">⏮ KO</button>
-          <button id="rv-play" title="play/pause (Space)">❚❚</button>
-          <button id="rv-next" class="secondary" title="next KO (n)">KO ⏭</button>
-          <button id="rv-stepb" class="secondary" title="step back (,)">‹</button>
-          <button id="rv-stepf" class="secondary" title="step forward (.)">›</button>
-          <div class="rv-speeds">${REPLAY_SPEEDS.map(
-            (s) =>
-              `<button class="rv-speed ${s === 1 ? "active" : ""}" data-speed="${s}">${s}×</button>`,
-          ).join("")}</div>
-          <div class="rv-cams">
-            <button class="rv-cam active" data-cam="follow" title="orbit the followed player (1)">FOLLOW</button>
-            <button class="rv-cam" data-cam="free" title="fly camera: WASD + Space/Shift, scroll = speed (2)">FREE</button>
-            <button class="rv-cam" data-cam="playerview" title="what they saw — exact for the recording player, approximate for others (3)">POV</button>
-          </div>
-          <button id="rv-export" title="export a video clip">EXPORT</button>
-          <div id="rv-time" class="rv-time">0:00</div>
-          <div class="rv-players" id="rv-players">${followChips}</div>
-        </div>
-      </div>`;
-
-    this.wire();
+    S.rvFollowId.set(this.player!.followTargetId);
+    S.rvCam.set("follow");
+    S.rvSpeed.set(1);
+    S.rvPlaying.set(true);
+    S.rvFill.set(0);
+    S.rvTime.set(`0:00 / ${fmtTicks(span)}`);
+    S.replayViewer.set({
+      code: h.code,
+      partial: h.partial,
+      buildMismatch: h.buildId !== BUILD_ID,
+      markers,
+      chips,
+      gaps,
+      players: vplayers,
+      speeds: REPLAY_SPEEDS,
+      onBack: () => this.player?.exit(),
+      onPrevKO: () => this.player?.jumpToMarker(-1),
+      onNextKO: () => this.player?.jumpToMarker(1),
+      onTogglePlay: () => this.player?.togglePlay(),
+      onStepBack: () => this.player?.stepSnapshots(-1),
+      onStepFwd: () => this.player?.stepSnapshots(1),
+      onSpeed: (s) => this.setSpeed(s),
+      onCamera: (m) => this.setCam(m),
+      onFollow: (id) => this.setFollow(id),
+      onSeekTick: (tick) => this.player?.seek(tick),
+      onScrubStart: () => {
+        this.wasPlaying = this.player?.isPlaying ?? false;
+        this.player?.pause();
+      },
+      onScrubFrac: (f) => this.player?.seekFrac(f),
+      onScrubEnd: () => {
+        if (this.wasPlaying) this.player?.play();
+      },
+      onExport: () => this.openExport(),
+    });
+    S.screen.set("replayViewer");
   }
 
-  private wire() {
-    const p = () => this.player!;
-    (document.getElementById("rv-back") as HTMLButtonElement).onclick = () => p().exit();
-    (document.getElementById("rv-play") as HTMLButtonElement).onclick = () =>
-      p().togglePlay();
-    (document.getElementById("rv-prev") as HTMLButtonElement).onclick = () =>
-      p().jumpToMarker(-1);
-    (document.getElementById("rv-next") as HTMLButtonElement).onclick = () =>
-      p().jumpToMarker(1);
-    (document.getElementById("rv-stepb") as HTMLButtonElement).onclick = () =>
-      p().stepSnapshots(-1);
-    (document.getElementById("rv-stepf") as HTMLButtonElement).onclick = () =>
-      p().stepSnapshots(1);
-
-    for (const b of this.root.querySelectorAll<HTMLButtonElement>(".rv-speed")) {
-      b.onclick = () => {
-        p().setSpeed(Number(b.dataset.speed));
-        for (const o of this.root.querySelectorAll(".rv-speed")) o.classList.remove("active");
-        b.classList.add("active");
-      };
-    }
-
-    for (const b of this.root.querySelectorAll<HTMLButtonElement>(".rv-cam")) {
-      b.onclick = () => this.pickCamera(b.dataset.cam as "follow" | "free" | "playerview");
-    }
-    (document.getElementById("rv-export") as HTMLButtonElement).onclick = () =>
-      this.openExport();
-
-    for (const b of this.root.querySelectorAll<HTMLButtonElement>(".rv-pchip")) {
-      b.onclick = () => {
-        p().setFollowTarget(Number(b.dataset.id));
-        for (const o of this.root.querySelectorAll(".rv-pchip")) o.classList.remove("active");
-        b.classList.add("active");
-      };
-    }
-
-    for (const c of this.root.querySelectorAll<HTMLButtonElement>(".rv-chip")) {
-      c.onclick = (e) => {
-        e.stopPropagation();
-        p().seek(Number(c.dataset.tick));
-      };
-    }
-    for (const m of this.root.querySelectorAll<HTMLElement>(".rv-marker")) {
-      m.onclick = (e) => {
-        e.stopPropagation();
-        p().seek(Number(m.dataset.tick));
-      };
-    }
-
-    // Scrub: click or drag anywhere on the track.
-    const track = document.getElementById("rv-track")!;
-    const seekFromEvent = (e: PointerEvent) => {
-      const r = track.getBoundingClientRect();
-      p().seekFrac((e.clientX - r.left) / r.width);
-    };
-    track.addEventListener("pointerdown", (e) => {
-      if ((e.target as HTMLElement).closest(".rv-chip, .rv-marker")) return;
-      this.scrubbing = true;
-      this.wasPlaying = p().isPlaying;
-      p().pause();
-      track.setPointerCapture(e.pointerId);
-      seekFromEvent(e);
-    });
-    track.addEventListener("pointermove", (e) => {
-      if (this.scrubbing) seekFromEvent(e);
-    });
-    const endScrub = (e: PointerEvent) => {
-      if (!this.scrubbing) return;
-      this.scrubbing = false;
-      seekFromEvent(e);
-      if (this.wasPlaying) p().play();
-    };
-    track.addEventListener("pointerup", endScrub);
-    track.addEventListener("pointercancel", () => {
-      this.scrubbing = false;
-    });
-  }
-
-  private pickCamera(mode: "follow" | "free" | "playerview") {
+  private setCam(mode: "follow" | "free" | "playerview") {
     this.player?.setCameraMode(mode);
-    for (const o of this.root.querySelectorAll(".rv-cam")) {
-      o.classList.toggle("active", (o as HTMLElement).dataset.cam === mode);
-    }
+    S.rvCam.set(mode);
+  }
+  private setSpeed(s: number) {
+    this.player?.setSpeed(s);
+    S.rvSpeed.set(s);
+  }
+  private setFollow(id: number) {
+    this.player?.setFollowTarget(id);
+    S.rvFollowId.set(id);
   }
 
-  /** Export dialog: camera preset, size, fps, range, format → progress → file. */
+  // ---- export dialog ----
+
   private openExport() {
     const p = this.player;
-    if (!p || p.isExporting || this.root.querySelector(".rv-export-modal")) return;
+    if (!p || p.isExporting || get(S.exportModal)) return;
     p.pause();
     const ds = p.dataset;
     const players = ds.allPlayers();
-    const targetName = esc(
-      players.find((x) => x.id === p.followTargetId)?.name ?? "player",
-    );
-    const round = ds.roundAt(p.playheadTick);
+    const targetName = players.find((x) => x.id === p.followTargetId)?.name ?? "player";
     const canMp4 = webCodecsAvailable();
+    const span = Math.max(1, ds.endTick - ds.startTick);
+    const koPcts = ds.markers
+      .filter((m) => m.kind === "ko")
+      .map((m) => Math.max(0, Math.min(1, (m.tick - ds.startTick) / span)) * 100);
+    const round = ds.roundAt(p.playheadTick);
 
-    const modal = document.createElement("div");
-    modal.className = "mode-modal rv-export-modal";
-    modal.innerHTML = `
-      <h2>EXPORT CLIP</h2>
-      <div class="rv-ex-grid">
-        <div class="rv-ex-row"><span>camera</span>
-          <label><input type="radio" name="ex-cam" value="follow" checked /> follow ${targetName}</label>
-          <label title="exact for the recording player, approximate for others"><input type="radio" name="ex-cam" value="playerview" /> ${targetName}'s view</label>
-        </div>
-        <div class="rv-ex-row"><span>size</span>
-          <label><input type="radio" name="ex-res" value="720" checked /> 720p</label>
-          <label><input type="radio" name="ex-res" value="1080" /> 1080p</label>
-        </div>
-        <div class="rv-ex-row"><span>fps</span>
-          <label><input type="radio" name="ex-fps" value="30" /> 30</label>
-          <label><input type="radio" name="ex-fps" value="60" checked /> 60</label>
-        </div>
-        <div class="rv-ex-row"><span>range</span>
-          <label><input type="radio" name="ex-range" value="all" checked /> whole replay</label>
-          ${round ? `<label><input type="radio" name="ex-range" value="round" /> round ${round.round}</label>` : ""}
-        </div>
-        <div class="rv-ex-row"><span>format</span>
-          <label><input type="radio" name="ex-mode" value="mp4" ${canMp4 ? "checked" : "disabled"} /> MP4 · fast · silent</label>
-          <label><input type="radio" name="ex-mode" value="webm" ${canMp4 ? "" : "checked"} /> WebM · real-time · with sound</label>
-        </div>
-      </div>
-      <div class="rv-ex-note hint">${
-        canMp4
-          ? "MP4 renders faster than real time. WebM plays the clip once at 1× — keep this tab visible."
-          : "this browser can't encode MP4 — WebM (real-time) it is"
-      }</div>
-      <div class="rv-ex-progress" style="display:none">
-        <div class="rv-ex-bar"><div class="rv-ex-fill" style="width:0%"></div></div>
-        <div class="rv-ex-pct">0%</div>
-      </div>
-      <div class="row" style="justify-content:center;gap:10px">
-        <button id="ex-start">START</button>
-        <button id="ex-close" class="secondary">CLOSE</button>
-      </div>`;
-    this.root.appendChild(modal);
+    const presets: S.ExportRangePreset[] = [
+      { label: "Whole match", inTick: ds.startTick, outTick: ds.endTick },
+      ...ds.rounds
+        .filter((r) => r.countdownTick !== null || r.roundStartTick !== null)
+        .map((r) => ({
+          label: `Round ${r.round}`,
+          inTick: r.countdownTick ?? r.roundStartTick ?? ds.startTick,
+          outTick: r.endTick ?? ds.endTick,
+        })),
+    ];
 
-    const pick = (name: string) =>
-      (modal.querySelector(`input[name="${name}"]:checked`) as HTMLInputElement | null)
-        ?.value;
-    let handle: { done: Promise<Blob>; cancel(): void } | null = null;
-    const note = modal.querySelector(".rv-ex-note") as HTMLElement;
-    const close = () => {
-      handle?.cancel();
-      modal.remove();
-    };
-    (modal.querySelector("#ex-close") as HTMLButtonElement).onclick = close;
-    this.exportModalClose = close;
+    const groups: S.ExportGroup[] = [
+      {
+        key: "camera",
+        label: "CAMERA",
+        initial: "follow",
+        options: [
+          { value: "follow", label: `Follow ${targetName}` },
+          {
+            value: "playerview",
+            label: `${targetName}'s POV`,
+            title: "exact for the recording player, approximate for others",
+          },
+        ],
+      },
+      {
+        key: "size",
+        label: "SIZE",
+        initial: "720",
+        options: [
+          { value: "720", label: "720p" },
+          { value: "1080", label: "1080p" },
+        ],
+      },
+      {
+        key: "fps",
+        label: "FPS",
+        initial: "60",
+        options: [
+          { value: "30", label: "30" },
+          { value: "60", label: "60" },
+        ],
+      },
+      {
+        key: "format",
+        label: "FORMAT",
+        initial: canMp4 ? "mp4" : "webm",
+        options: [
+          { value: "mp4", label: "MP4 · fast · silent", disabled: !canMp4 },
+          { value: "webm", label: "WebM · realtime · sound" },
+        ],
+      },
+    ];
 
-    (modal.querySelector("#ex-start") as HTMLButtonElement).onclick = async () => {
-      if (handle) return;
-      const res = pick("ex-res") === "1080" ? [1920, 1080] : [1280, 720];
-      const rangeRound = pick("ex-range") === "round" ? round : null;
-      const startTick = rangeRound
-        ? (rangeRound.countdownTick ?? rangeRound.roundStartTick ?? ds.startTick)
-        : ds.startTick;
-      const endTick = rangeRound ? (rangeRound.endTick ?? ds.endTick) : ds.endTick;
-      const req: ExportRequest = {
-        width: res[0],
-        height: res[1],
-        fps: pick("ex-fps") === "30" ? 30 : 60,
-        camera: pick("ex-cam") === "playerview" ? "playerview" : "follow",
-        targetId: p.followTargetId,
-        startTick,
-        endTick,
-        mode: pick("ex-mode") === "webm" ? "webm" : "mp4",
-        onProgress: (f) => {
-          const fill = modal.querySelector(".rv-ex-fill") as HTMLElement | null;
-          const pct = modal.querySelector(".rv-ex-pct") as HTMLElement | null;
-          if (fill) fill.style.width = `${(f * 100).toFixed(1)}%`;
-          if (pct) pct.textContent = `${Math.round(f * 100)}%`;
-        },
-      };
-      for (const input of modal.querySelectorAll("input, #ex-start")) {
-        (input as HTMLInputElement | HTMLButtonElement).disabled = true;
-      }
-      (modal.querySelector(".rv-ex-progress") as HTMLElement).style.display = "";
-      note.textContent = req.mode === "webm" ? "recording in real time — keep this tab visible…" : "rendering…";
-      try {
-        handle = await p.startExport(req);
-        const blob = await handle.done;
-        downloadBlob(blob, replayFilename(ds.header, blob.type.includes("mp4") ? "mp4" : "webm"));
-        note.textContent = "saved!";
-        setTimeout(() => modal.remove(), 900);
-      } catch (e) {
-        if (e instanceof ExportCancelled) {
-          modal.remove();
-        } else {
-          note.textContent = `export failed: ${e instanceof Error ? e.message : e}`;
-          (modal.querySelector(".rv-ex-progress") as HTMLElement).style.display = "none";
-          handle = null;
-          for (const input of modal.querySelectorAll("input, #ex-start")) {
-            (input as HTMLInputElement | HTMLButtonElement).disabled = false;
-          }
-        }
-      }
-    };
+    const inTick = round ? (round.countdownTick ?? round.roundStartTick ?? ds.startTick) : ds.startTick;
+    const outTick = round ? (round.endTick ?? ds.endTick) : ds.endTick;
+
+    S.exExporting.set(false);
+    S.exProgress.set(0);
+    S.exStatus.set("");
+    S.exPreviewing.set(false);
+    S.exNote.set(
+      canMp4
+        ? "MP4 renders faster than real time. WebM plays once at 1× — keep this tab visible."
+        : "this browser can't encode MP4 — WebM (real-time) it is",
+    );
+    this.exportOpen = true;
+    this.previewPlaying = false;
+    p.seek(inTick);
+
+    S.exportModal.set({
+      startTick: ds.startTick,
+      endTick: ds.endTick,
+      inTick,
+      outTick,
+      koPcts,
+      groups,
+      presets,
+      defaultName: replayFilename(ds.header, "").replace(/\.$/, ""),
+      note: get(S.exNote),
+      fmtExt: (f) => (f === "webm" ? "webm" : "mp4"),
+      durationLabel: (i, o) => fmtTicks(o - i),
+      tickLabel: (t) => fmtTicks(t - ds.startTick),
+      onClose: () => this.closeExport(),
+      onRender: (sel) => void this.runExport(sel),
+      onPreviewToggle: (i, o) => this.togglePreview(i, o),
+      onPreviewSeek: (t) => {
+        this.previewPlaying = false;
+        S.exPreviewing.set(false);
+        this.player?.pause();
+        this.player?.seek(t);
+      },
+    });
   }
 
-  private exportModalClose: (() => void) | null = null;
+  private closeExport() {
+    this.exportHandle?.cancel();
+    this.exportHandle = null;
+    this.exportOpen = false;
+    this.previewPlaying = false;
+    S.exPreviewing.set(false);
+    S.exportModal.set(null);
+  }
+
+  private async runExport(sel: S.ExportSelection) {
+    const p = this.player;
+    if (!p || this.exportHandle) return;
+    const [width, height] = sel.size === "1080" ? [1920, 1080] : [1280, 720];
+    const req: ExportRequest = {
+      width,
+      height,
+      fps: sel.fps === "30" ? 30 : 60,
+      camera: sel.camera === "playerview" ? "playerview" : "follow",
+      targetId: p.followTargetId,
+      startTick: sel.inTick,
+      endTick: sel.outTick,
+      mode: sel.format === "webm" ? "webm" : "mp4",
+      onProgress: (f) => S.exProgress.set(f),
+    };
+    this.previewPlaying = false;
+    S.exPreviewing.set(false);
+    S.exExporting.set(true);
+    S.exProgress.set(0);
+    S.exStatus.set(
+      req.mode === "webm" ? "recording in real time — keep this tab visible…" : "rendering…",
+    );
+    try {
+      this.exportHandle = await p.startExport(req);
+      const blob = await this.exportHandle.done;
+      const ext = blob.type.includes("mp4") ? "mp4" : "webm";
+      const name = sel.name.trim() ? `${sel.name.trim()}.${ext}` : replayFilename(p.dataset.header, ext);
+      downloadBlob(blob, name);
+      S.exStatus.set("saved!");
+      setTimeout(() => this.closeExport(), 900);
+    } catch (e) {
+      if (e instanceof ExportCancelled) {
+        this.closeExport();
+      } else {
+        S.exStatus.set(`export failed: ${e instanceof Error ? e.message : e}`);
+        S.exExporting.set(false);
+        this.exportHandle = null;
+      }
+    }
+  }
+
+  private togglePreview(inTick: number, outTick: number) {
+    const p = this.player;
+    if (!p) return;
+    if (this.previewPlaying) {
+      this.previewPlaying = false;
+      p.pause();
+      S.exPreviewing.set(false);
+      return;
+    }
+    this.previewPlaying = true;
+    this.previewOut = outTick;
+    p.setSpeed(1);
+    p.seek(inTick);
+    p.play();
+    S.exPreviewing.set(true);
+  }
+
+  /** Mirror the live #game render into the modal's #ex-prev canvas. */
+  private previewTick() {
+    const p = this.player;
+    if (!p) return;
+    if (this.previewPlaying && p.playheadTick >= this.previewOut) {
+      this.previewPlaying = false;
+      p.pause();
+      S.exPreviewing.set(false);
+    }
+    const src = document.getElementById("game") as HTMLCanvasElement | null;
+    const dst = document.getElementById("ex-prev") as HTMLCanvasElement | null;
+    if (src && dst) {
+      const ctx = dst.getContext("2d");
+      if (ctx) {
+        if (dst.width !== dst.clientWidth) dst.width = dst.clientWidth;
+        if (dst.height !== dst.clientHeight) dst.height = dst.clientHeight;
+        try {
+          ctx.drawImage(src, 0, 0, dst.width, dst.height);
+        } catch {
+          /* cross-frame draw can briefly fail mid-resize; ignore */
+        }
+      }
+    }
+    S.exPreviewTime.set(fmtTicks(p.playheadTick - p.dataset.startTick));
+  }
 
   private onKey(e: KeyboardEvent) {
     const p = this.player;
     if (!p) return;
     if (e.target instanceof HTMLInputElement) return;
-    if (this.root.querySelector(".rv-export-modal")) {
-      // The export dialog owns the keyboard; Esc closes (and cancels) it.
-      if (e.key === "Escape") this.exportModalClose?.();
+    if (get(S.exportModal)) {
+      if (e.key === "Escape") this.closeExport();
       return;
     }
     switch (e.key) {
@@ -579,8 +522,6 @@ export class ReplayViewerUI {
         p.togglePlay();
         break;
       case "Escape":
-        // First Esc releases pointer lock (browser handles it); this fires
-        // regardless — only exit when the pointer isn't locked.
         if (!document.pointerLockElement) p.exit();
         break;
       case ",":
@@ -596,13 +537,13 @@ export class ReplayViewerUI {
         p.jumpToMarker(1);
         break;
       case "1":
-        this.pickCamera("follow");
+        this.setCam("follow");
         break;
       case "2":
-        this.pickCamera("free");
+        this.setCam("free");
         break;
       case "3":
-        this.pickCamera("playerview");
+        this.setCam("playerview");
         break;
       default:
         return;

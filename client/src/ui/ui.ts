@@ -1,130 +1,18 @@
+// UI controller. Keeps the exact method surface GameClient and main.ts call
+// (showMenu / showSettings / buildHud / setDamage / setScores / setPhaseOverlay
+// …) but, instead of building innerHTML, it writes Svelte stores that App.svelte
+// renders. Hot per-frame setters debounce (only .set() on change) so the reactive
+// churn stays minimal. The engine is untouched.
+
 import { BOT_DIFF_NAMES, type Phase, type PlayerMeta, type Score } from "../net/messages";
 import constants from "../../../shared/constants.json";
 import { isTouchDevice, savedInputMode, type InputMode } from "../game/input";
 import type { Quality } from "../game/quality";
-import { SLOT_COLORS } from "../game/players";
-import {
-  arrowCluster,
-  gearIcon,
-  hintItem,
-  hintRow,
-  keycap,
-  mouseIcon,
-  wasdCluster,
-} from "./icons";
+import { colorOf, esc } from "./util";
+import * as S from "./app/stores";
 
-export function colorOf(slot: number): string {
-  return "#" + SLOT_COLORS[slot % SLOT_COLORS.length].toString(16).padStart(6, "0");
-}
-
-/** Restart a CSS keyframe animation class on an element. */
-function retrigger(el: HTMLElement, cls: string) {
-  el.classList.remove(cls);
-  void el.offsetWidth; // force reflow so the animation replays
-  el.classList.add(cls);
-}
-
-/**
- * Escape untrusted text (player names, server error strings) before it goes
- * into innerHTML. Player names come straight off the wire from other clients,
- * so treating them as markup would be a stored-XSS hole.
- */
-export function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => {
-    switch (c) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      default:
-        return "&#39;";
-    }
-  });
-}
-
-function menuControlsHint(): string {
-  if (isTouchDevice()) {
-    return `<span class="hint-row"><span class="hint-item">left stick to move · drag to aim · tap buttons to fight</span></span>`;
-  }
-  if (savedInputMode() === "keyboard") {
-    return hintRow([
-      hintItem(wasdCluster(), "move"),
-      hintItem(arrowCluster(), "aim"),
-      hintItem(keycap("J"), "light"),
-      hintItem(keycap("K"), "heavy"),
-      hintItem(keycap("Space", true), "jump"),
-      hintItem(keycap("Shift", true), "dash"),
-      hintItem(keycap("C"), "center cam"),
-    ]);
-  }
-  return hintRow([
-    hintItem(wasdCluster(), "move"),
-    hintItem(mouseIcon("move"), "aim"),
-    hintItem(mouseIcon("left"), "light"),
-    hintItem(mouseIcon("right"), "heavy"),
-    hintItem(keycap("Space", true), "jump"),
-    hintItem(keycap("Shift", true), "dash"),
-  ]);
-}
-
-function hudControlsHint(): string {
-  const kb = savedInputMode() === "keyboard";
-  return (
-    hintRow([
-      hintItem(wasdCluster(), "move"),
-      ...(kb ? [hintItem(arrowCluster(), "aim")] : []),
-      hintItem(keycap("Space", true), "jump ×2"),
-      hintItem(keycap("Shift", true), "dash"),
-    ]) +
-    "<br>" +
-    hintRow(
-      kb
-        ? [
-            hintItem(keycap("J"), "light"),
-            hintItem(keycap("K"), "heavy / air-slam"),
-            hintItem(keycap("C"), "center camera"),
-          ]
-        : [
-            hintItem(mouseIcon("left"), "light"),
-            hintItem(mouseIcon("right"), "heavy / air-slam"),
-          ],
-    )
-  );
-}
-
-/** The two selectable schemes, rendered as cards in the input-mode prompt. */
-function modeCard(mode: InputMode): string {
-  const title = mode === "keyboard" ? "Keyboard + Trackpad" : "Keyboard + Mouse";
-  const sub =
-    mode === "keyboard"
-      ? `<span class="hint">keyboard-only controls — no mouse needed</span>`
-      : `<span class="hint">aim with the mouse, pointer is captured</span>`;
-  const aimRow =
-    mode === "keyboard"
-      ? hintRow([
-          hintItem(arrowCluster(), "aim"),
-          hintItem(keycap("J"), "light"),
-          hintItem(keycap("K"), "heavy"),
-          hintItem(keycap("C"), "center cam"),
-        ])
-      : hintRow([
-          hintItem(mouseIcon("move"), "aim"),
-          hintItem(mouseIcon("left"), "light"),
-          hintItem(mouseIcon("right"), "heavy"),
-        ]);
-  const moveRow = hintRow([
-    hintItem(wasdCluster(), "move"),
-    hintItem(keycap("Space", true), "jump"),
-    hintItem(keycap("Shift", true), "dash"),
-  ]);
-  return `<button class="mode-card" data-mode="${mode}">
-      <b>${title}</b>${sub}${moveRow}${aimRow}
-    </button>`;
-}
+// Re-export the shared helpers eventfx.ts imports from here.
+export { colorOf, esc };
 
 export interface PhaseCtx {
   myId: number;
@@ -143,24 +31,21 @@ export interface PhaseCtx {
 }
 
 export class UI {
-  private root = document.getElementById("ui")!;
-  private hudDamage: HTMLElement | null = null;
-  private hudCenter: HTMLElement | null = null;
-  private hudSub: HTMLElement | null = null;
-  private hudScores: HTMLElement | null = null;
-  private overlay: HTMLElement | null = null;
-  private hudCombo: HTMLElement | null = null;
-  private hudFlash: HTMLElement | null = null;
-  private lastCenter = "";
   private lastDmg = -1;
-  private lastWins = new Map<number, number>();
+  private lastDmgText = "";
+  private lastDmgColor = "";
+  private lastPowerup = "";
+  private lastPowerupColor = "";
+  private lastPing = "";
+  private lastCombo = "";
+  private lastCenter = "";
+  private lastSub = "";
 
   constructor() {
     // Enter presses START MATCH / REMATCH so a keyboard-only host never needs
-    // the pointer. A single persistent listener (the overlay's innerHTML is
-    // rebuilt every phase change, so per-button listeners wouldn't survive);
-    // deliberately not focus()-based — a focused button would be activated by
-    // Space, which is the jump key.
+    // the pointer. A single persistent listener (Svelte owns/rebuilds the
+    // buttons); deliberately not focus()-based — a focused button would be
+    // activated by Space, which is the jump key.
     window.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" || e.repeat) return;
       if (e.target instanceof HTMLInputElement) return;
@@ -179,115 +64,39 @@ export class UI {
     onChangeControls: (() => void) | null = null,
     onReplays: (() => void) | null = null,
   ) {
-    const saved = localStorage.getItem("sz-name") ?? "";
-    const modeLabel =
-      savedInputMode() === "keyboard" ? "keyboard + trackpad" : "keyboard + mouse";
-    this.root.innerHTML = `
-      <div class="menu">
-        ${
-          onChangeControls
-            ? `<button id="m-settings" class="menu-gear" aria-label="Input & controls settings" title="Input & controls">${gearIcon()}</button>`
-            : ""
-        }
-        <h1>SMASHZONE</h1>
-        <div class="error">${esc(error)}</div>
-        <input id="m-name" maxlength="16" placeholder="your name" value="${esc(saved)}" />
-        <button id="m-create">Create Party</button>
-        <div class="row">
-          <input id="m-code" maxlength="4" placeholder="CODE" />
-          <button id="m-join" class="secondary">Join</button>
-        </div>
-        ${onReplays ? `<button id="m-replays" class="secondary">Replays</button>` : ""}
-        <div class="hint">${menuControlsHint()}</div>
-        ${
-          onChangeControls
-            ? `<div class="hint">controls: ${modeLabel} <button id="m-mode" class="linklike">change</button></div>`
-            : ""
-        }
-      </div>`;
-    const name = () => {
-      const v = (document.getElementById("m-name") as HTMLInputElement).value.trim() || "Player";
-      localStorage.setItem("sz-name", v);
-      return v;
-    };
-    document.getElementById("m-create")!.onclick = () => onCreate(name());
-    const join = () => {
-      const code = (document.getElementById("m-code") as HTMLInputElement).value.trim().toUpperCase();
-      if (code.length === 4) onJoin(name(), code);
-    };
-    document.getElementById("m-join")!.onclick = join;
-    (document.getElementById("m-code") as HTMLInputElement).onkeydown = (e) => {
-      if (e.key === "Enter") join();
-    };
-    (document.getElementById("m-name") as HTMLInputElement).onkeydown = (e) => {
-      if (e.key === "Enter") onCreate(name());
-    };
-    if (onChangeControls) {
-      const modeBtn = document.getElementById("m-mode");
-      if (modeBtn) modeBtn.onclick = onChangeControls;
-      const settingsBtn = document.getElementById("m-settings");
-      if (settingsBtn) settingsBtn.onclick = onChangeControls;
-    }
-    if (onReplays) {
-      const replaysBtn = document.getElementById("m-replays");
-      if (replaysBtn) replaysBtn.onclick = onReplays;
-    }
+    S.menu.set({
+      error,
+      touch: isTouchDevice(),
+      mode: savedInputMode(),
+      showReplays: !!onReplays,
+      onCreate,
+      onJoin,
+      onSettings: onChangeControls ?? (() => {}),
+      onReplays: onReplays ?? (() => {}),
+    });
+    S.screen.set("menu");
   }
 
-  /**
-   * Modal asking how the player aims. Fully keyboard-operable: arrows/Tab
-   * move between the cards, Enter confirms, Esc cancels. Appended on top of
-   * whatever screen is showing (never replaces it), removed on close.
-   */
+  /** First-join gate: how the player aims. Keyboard-operable; closes on pick. */
   showInputModePrompt(
     current: InputMode | null,
     onPick: (m: InputMode) => void,
     onCancel: () => void,
   ) {
-    const modal = document.createElement("div");
-    modal.className = "mode-modal";
-    modal.innerHTML = `
-      <h2>HOW DO YOU PLAY?</h2>
-      <div class="mode-cards">${modeCard("pointer")}${modeCard("keyboard")}</div>
-      <div class="hint">← → to choose · Enter to confirm · Esc to cancel</div>`;
-    this.root.appendChild(modal);
-
-    const cards = [...modal.querySelectorAll<HTMLButtonElement>(".mode-card")];
-    const close = () => modal.remove();
-    // The Enter press that opened the modal (e.g. in the name field) would
-    // otherwise activate the freshly-focused card in the same keystroke.
-    const openedAt = performance.now();
-    for (const card of cards) {
-      card.onclick = () => {
-        if (performance.now() - openedAt < 250) return;
-        close();
-        onPick(card.dataset.mode as InputMode);
-      };
-    }
-    // Keys are handled here and stopped so the game's window-level listeners
-    // never see arrows/Space while the modal is open.
-    modal.addEventListener("keydown", (e) => {
-      const focused = cards.indexOf(document.activeElement as HTMLButtonElement);
-      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Tab"].includes(e.key)) {
-        e.preventDefault();
-        e.stopPropagation();
-        const back = e.key === "ArrowLeft" || e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey);
-        cards[(focused + (back ? cards.length - 1 : 1)) % cards.length].focus();
-      } else if (e.key === "Escape") {
-        e.stopPropagation();
-        close();
+    S.inputPrompt.set({
+      current,
+      onPick: (m) => {
+        S.inputPrompt.set(null);
+        onPick(m);
+      },
+      onCancel: () => {
+        S.inputPrompt.set(null);
         onCancel();
-      } else if (e.key === "Enter" || e.key === " ") {
-        e.stopPropagation(); // let the focused button's native activation fire
-      }
+      },
     });
-    cards[current === "keyboard" ? 1 : 0].focus();
   }
 
-  /**
-   * Full settings modal (opened by the menu gear): input scheme, audio
-   * volume/mute, and render quality. Live-applies each change; Esc closes.
-   */
+  /** Settings modal: input scheme, audio, quality, auto-record. Live-applies. */
   showSettings(opts: {
     onPickMode: (m: InputMode) => void;
     volume: number;
@@ -303,173 +112,123 @@ export class UI {
     recordReplays: boolean;
     onRecordReplays: (on: boolean) => void;
   }) {
-    const modal = document.createElement("div");
-    modal.className = "mode-modal";
-    modal.tabIndex = -1;
-    const qualities: Quality[] = ["low", "medium", "high"];
-    modal.innerHTML = `
-      <h2>SETTINGS</h2>
-      ${
-        isTouchDevice()
-          ? ""
-          : `<div class="settings-section"><div class="hint">controls</div>
-        <div class="mode-cards">${modeCard("pointer")}${modeCard("keyboard")}</div></div>`
-      }
-      <div class="settings-section"><div class="hint">audio</div>
-        <label class="settings-row"><span>sfx volume</span>
-          <input id="set-vol" type="range" min="0" max="100" value="${Math.round(opts.volume * 100)}" /></label>
-        <label class="settings-row"><span>sfx mute</span>
-          <input id="set-mute" type="checkbox" ${opts.muted ? "checked" : ""} /></label>
-        <label class="settings-row"><span>music volume</span>
-          <input id="set-mvol" type="range" min="0" max="100" value="${Math.round(opts.musicVolume * 100)}" /></label>
-        <label class="settings-row"><span>music mute</span>
-          <input id="set-mmute" type="checkbox" ${opts.musicMuted ? "checked" : ""} /></label>
-      </div>
-      <div class="settings-section"><div class="hint">quality</div>
-        <div class="quality-cards">${qualities
-          .map(
-            (q) =>
-              `<button class="q-btn ${q === opts.quality ? "active" : ""}" data-q="${q}">${q}</button>`,
-          )
-          .join("")}</div>
-      </div>
-      <div class="settings-section"><div class="hint">replays</div>
-        <label class="settings-row"><span>auto-record matches</span>
-          <input id="set-record" type="checkbox" ${opts.recordReplays ? "checked" : ""} /></label>
-      </div>
-      <div class="hint">Esc to close</div>`;
-    this.root.appendChild(modal);
-    const close = () => modal.remove();
-
-    for (const card of modal.querySelectorAll<HTMLButtonElement>(".mode-card")) {
-      card.onclick = () => {
-        opts.onPickMode(card.dataset.mode as InputMode);
-        close();
-      };
-    }
-    const vol = modal.querySelector<HTMLInputElement>("#set-vol")!;
-    vol.oninput = () => opts.onVolume(Number(vol.value) / 100);
-    const mute = modal.querySelector<HTMLInputElement>("#set-mute")!;
-    mute.onchange = () => opts.onMuted(mute.checked);
-    const mvol = modal.querySelector<HTMLInputElement>("#set-mvol")!;
-    mvol.oninput = () => opts.onMusicVolume(Number(mvol.value) / 100);
-    const mmute = modal.querySelector<HTMLInputElement>("#set-mmute")!;
-    mmute.onchange = () => opts.onMusicMuted(mmute.checked);
-    const rec = modal.querySelector<HTMLInputElement>("#set-record")!;
-    rec.onchange = () => opts.onRecordReplays(rec.checked);
-    for (const b of modal.querySelectorAll<HTMLButtonElement>(".q-btn")) {
-      b.onclick = () => {
-        opts.onQuality(b.dataset.q as Quality);
-        modal.querySelectorAll(".q-btn").forEach((x) => x.classList.remove("active"));
-        b.classList.add("active");
-      };
-    }
-    modal.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        close();
-      }
+    S.settingsModal.set({
+      touch: isTouchDevice(),
+      mode: savedInputMode(),
+      volume: opts.volume,
+      muted: opts.muted,
+      musicVolume: opts.musicVolume,
+      musicMuted: opts.musicMuted,
+      quality: opts.quality,
+      recordReplays: opts.recordReplays,
+      onPickMode: opts.onPickMode,
+      onVolume: opts.onVolume,
+      onMuted: opts.onMuted,
+      onMusicVolume: opts.onMusicVolume,
+      onMusicMuted: opts.onMusicMuted,
+      onQuality: opts.onQuality,
+      onRecordReplays: opts.onRecordReplays,
+      onClose: () => S.settingsModal.set(null),
     });
-    modal.focus();
   }
 
   showConnecting() {
-    this.root.innerHTML = `<div class="menu"><h1>SMASHZONE</h1><div>connecting…</div></div>`;
+    S.screen.set("connecting");
   }
 
   buildHud(code: string) {
-    this.root.innerHTML = `
-      <div id="h-flash"></div>
-      <div class="hud-room">ROOM ${esc(code)} · <span id="h-ping"></span></div>
-      <div class="hud-scores" id="h-scores"></div>
-      <div class="hud-feed" id="h-feed"></div>
-      <div class="hud-damage" id="h-damage"></div>
-      <div class="hud-powerup" id="h-powerup"></div>
-      <div class="hud-combo" id="h-combo"></div>
-      <div class="hud-center" id="h-center"><div id="h-title"></div><div class="hud-sub" id="h-sub"></div></div>
-      <div id="h-overlay"></div>
-      ${isTouchDevice() ? "" : `<div class="controls-hint">${hudControlsHint()}</div>`}`;
-    this.hudDamage = document.getElementById("h-damage");
-    this.hudCenter = document.getElementById("h-title");
-    this.hudSub = document.getElementById("h-sub");
-    this.hudScores = document.getElementById("h-scores");
-    this.overlay = document.getElementById("h-overlay");
-    this.hudCombo = document.getElementById("h-combo");
-    this.hudFlash = document.getElementById("h-flash");
-    this.lastCenter = "";
+    S.hudCode.set(code);
+    S.overlay.set({ kind: "none" });
+    S.scores.set([]);
+    S.clearFeed();
+    S.damage.set("");
+    S.powerup.set("");
+    S.combo.set("");
+    S.ping.set("");
+    S.centerTitle.set("");
+    S.centerSub.set("");
     this.lastDmg = -1;
-    this.lastWins.clear();
+    this.lastDmgText = "";
+    this.lastDmgColor = "";
+    this.lastPowerup = "";
+    this.lastPowerupColor = "";
+    this.lastPing = "";
+    this.lastCombo = "";
+    this.lastCenter = "";
+    this.lastSub = "";
+    S.screen.set("hud");
   }
 
-  /** Combo readout ("N HITS"); hidden below 2 hits. Display-only. */
+  /** Combo readout ("N HITS"); hidden below 2 hits. */
   setCombo(n: number) {
-    if (!this.hudCombo) return;
-    if (n < 2) {
-      this.hudCombo.textContent = "";
-      return;
+    const text = n < 2 ? "" : `${n} HITS`;
+    if (text !== this.lastCombo) {
+      this.lastCombo = text;
+      S.combo.set(text);
     }
-    this.hudCombo.textContent = `${n} HITS`;
-    retrigger(this.hudCombo, "combo-pop");
+    if (text) S.comboBump.update((x) => x + 1);
   }
 
   /** Full-screen white flash (KO punctuation). */
   flash(strength = 0.4) {
-    if (!this.hudFlash) return;
-    this.hudFlash.style.setProperty("--flash", String(strength));
-    retrigger(this.hudFlash, "flash-out");
+    S.flashStrength.set(strength);
+    S.flashBump.update((x) => x + 1);
   }
 
   setPowerup(name: string, secs: number, colorHex: string) {
-    const el = document.getElementById("h-powerup");
-    if (!el) return;
-    if (!name) {
-      el.textContent = "";
-      return;
+    const text = name ? `${name} ${Math.max(0, Math.ceil(secs))}s` : "";
+    if (text !== this.lastPowerup) {
+      this.lastPowerup = text;
+      S.powerup.set(text);
     }
-    el.textContent = `${name} ${Math.max(0, Math.ceil(secs))}s`;
-    el.style.color = colorHex;
+    if (colorHex !== this.lastPowerupColor) {
+      this.lastPowerupColor = colorHex;
+      S.powerupColor.set(colorHex);
+    }
   }
 
   setPing(ms: number) {
-    const el = document.getElementById("h-ping");
-    if (el) el.textContent = `${Math.max(0, Math.round(ms))}ms`;
+    const text = `${Math.max(0, Math.round(ms))}ms`;
+    if (text !== this.lastPing) {
+      this.lastPing = text;
+      S.ping.set(text);
+    }
   }
 
-  /** Append a kill-feed line (caller pre-escapes any names). Cap 4, TTL 4 s. */
+  /** Append a kill-feed line (caller pre-escapes any names). */
   addFeed(html: string) {
-    const el = document.getElementById("h-feed");
-    if (!el) return;
-    const line = document.createElement("div");
-    line.className = "feed-line";
-    line.innerHTML = html;
-    el.appendChild(line);
-    while (el.children.length > 4) el.removeChild(el.firstChild!);
-    setTimeout(() => line.remove(), 4000);
+    S.pushFeed(html);
   }
 
   setDamage(dmg: number, alive: boolean) {
-    if (!this.hudDamage) return;
-    this.hudDamage.textContent = alive ? `${dmg}%` : "";
-    const heat = Math.min(1, dmg / 150);
-    this.hudDamage.style.color = `rgb(255, ${Math.round(255 - heat * 190)}, ${Math.round(
-      255 - heat * 230,
-    )})`;
-    // Pop on increase only (this runs every frame).
-    if (alive && this.lastDmg >= 0 && dmg > this.lastDmg) {
-      retrigger(this.hudDamage, "dmg-pop");
+    const text = alive ? `${dmg}%` : "";
+    if (text !== this.lastDmgText) {
+      this.lastDmgText = text;
+      S.damage.set(text);
     }
+    const heat = Math.min(1, dmg / 150);
+    const color = `rgb(255, ${Math.round(255 - heat * 190)}, ${Math.round(255 - heat * 230)})`;
+    if (color !== this.lastDmgColor) {
+      this.lastDmgColor = color;
+      S.damageColor.set(color);
+    }
+    // Pop on increase only (this runs every frame).
+    if (alive && this.lastDmg >= 0 && dmg > this.lastDmg) S.damageBump.update((x) => x + 1);
     this.lastDmg = alive ? dmg : -1;
   }
 
   setCenter(title: string, sub = "") {
-    // Slam-in only when the text actually changes — this is called every
-    // frame during countdown with the same string.
-    if (this.hudCenter && title !== this.lastCenter) {
+    // Slam-in only when the text actually changes — called every frame during
+    // countdown with the same string.
+    if (title !== this.lastCenter) {
       this.lastCenter = title;
-      this.hudCenter.textContent = title;
-      if (title) retrigger(this.hudCenter, "center-pop");
+      S.centerTitle.set(title);
+      if (title) S.centerBump.update((x) => x + 1);
     }
-    if (this.hudSub) this.hudSub.textContent = sub;
+    if (sub !== this.lastSub) {
+      this.lastSub = sub;
+      S.centerSub.set(sub);
+    }
   }
 
   setScores(
@@ -478,115 +237,83 @@ export class UI {
     aliveIds?: Set<number>,
     disconnectedIds?: Set<number>,
   ) {
-    if (!this.hudScores) return;
     const wins = new Map(scores.map((s) => [s.id, s.wins]));
-    this.hudScores.innerHTML = [...metas.values()]
-      .map((m) => {
-        const dead = aliveIds && !aliveIds.has(m.id);
-        const gone = disconnectedIds?.has(m.id);
-        const w = wins.get(m.id) ?? 0;
-        // Bump the row once when its win count goes up (round win).
-        const bump = w > (this.lastWins.get(m.id) ?? 0);
-        this.lastWins.set(m.id, w);
-        return `<div class="row ${dead ? "dead" : ""} ${gone ? "disconnected" : ""} ${bump ? "bump" : ""}">
-          <div class="dot" style="background:${colorOf(m.slot)}"></div>
-          <span>${esc(m.name)}${gone ? " ⟳" : ""}</span><b>${w}</b>
-        </div>`;
-      })
-      .join("");
+    S.scores.set(
+      [...metas.values()].map((m) => ({
+        id: m.id,
+        name: m.name,
+        color: colorOf(m.slot),
+        wins: wins.get(m.id) ?? 0,
+        dead: !!(aliveIds && !aliveIds.has(m.id)),
+        disconnected: !!disconnectedIds?.has(m.id),
+        bot: m.bot,
+        difficulty: m.difficulty,
+      })),
+    );
   }
 
-  /** Full-screen overlays for lobby / match end. */
+  /** Full-screen overlays for lobby / match end (rendered inside #h-overlay). */
   setPhaseOverlay(phase: Phase, ctx: PhaseCtx) {
-    if (!this.overlay) return;
     if (phase.type === "Lobby") {
       const isHost = ctx.myId === ctx.host;
       const canAddBot = isHost && ctx.metas.size < constants.maxPlayers;
-      this.overlay.innerHTML = `
-        <div class="lobby-panel">
-          <div class="hint">share this code</div>
-          <div class="code">${esc(ctx.code)}</div>
-          <div class="players">${[...ctx.metas.values()]
-            .map((m) => {
-              // Difficulty names are our own constants, not wire text.
-              const tag = m.bot
-                ? `<span class="bot-tag diff-${m.difficulty}">BOT · ${
-                    BOT_DIFF_NAMES[m.difficulty] ?? "?"
-                  }</span>`
-                : "";
-              const star = m.id === ctx.host ? " ★" : "";
-              const rm =
-                isHost && m.bot
-                  ? `<button class="bot-x" data-bot="${m.id}" aria-label="remove bot">✕</button>`
-                  : "";
-              return `<div class="pcard" style="--slot:${colorOf(m.slot)}">${esc(m.name)}${tag}${star}${rm}</div>`;
-            })
-            .join("")}</div>
-          ${
-            isHost
-              ? `<button id="h-start" class="big-btn">START MATCH</button>`
-              : `<div class="hint">waiting for the host to start…</div>`
-          }
-          ${
-            canAddBot
-              ? `<div class="addbot-row"><span class="hint">+ add bot</span>${BOT_DIFF_NAMES.map(
-                  (n, i) =>
-                    // Keep #h-addbot on Medium: it stays the "default" add-bot
-                    // hook for tooling and muscle memory.
-                    `<button class="bot-add diff-${i}" data-diff="${i}"${
-                      i === 1 ? ` id="h-addbot"` : ""
-                    }>${n}</button>`,
-                ).join("")}</div>`
-              : ""
-          }
-          <div class="hint">you can run around and brawl while you wait — falling off just respawns you</div>
-        </div>`;
-      const btn = document.getElementById("h-start");
-      if (btn) btn.onclick = ctx.onStart;
-      for (const b of this.overlay.querySelectorAll<HTMLButtonElement>(".bot-add")) {
-        b.onclick = () => ctx.onAddBot(Number(b.dataset.diff));
-      }
-      for (const x of this.overlay.querySelectorAll<HTMLButtonElement>(".bot-x")) {
-        x.onclick = () => ctx.onRemoveBot(Number(x.dataset.bot));
-      }
+      const players: S.PlayerCard[] = [...ctx.metas.values()].map((m) => ({
+        id: m.id,
+        name: m.name,
+        color: colorOf(m.slot),
+        bot: m.bot,
+        difficulty: m.difficulty,
+        host: m.id === ctx.host,
+        wins: 0,
+        best: false,
+        removable: isHost && m.bot,
+      }));
+      S.overlay.set({
+        kind: "lobby",
+        code: ctx.code,
+        players,
+        isHost,
+        canAddBot,
+        botTiers: [...BOT_DIFF_NAMES],
+        onStart: ctx.onStart,
+        onAddBot: ctx.onAddBot,
+        onRemoveBot: ctx.onRemoveBot,
+        onCopyCode: () => this.copyCode(ctx.code),
+      });
     } else if (phase.type === "MatchEnd") {
       const isHost = ctx.myId === ctx.host;
       const winner = ctx.metas.get(phase.winner);
-      this.overlay.innerHTML = `
-        <div class="lobby-panel">
-          <div class="code" style="letter-spacing:2px">${esc(winner?.name ?? "???")} WINS!</div>
-          <div class="players">${phase.scores
-            .map((s) => {
-              const m = ctx.metas.get(s.id);
-              return `<div class="pcard" style="--slot:${colorOf(m?.slot ?? 0)}">${
-                esc(m?.name ?? "?")
-              }<br><b style="font-size:26px">${s.wins}</b></div>`;
-            })
-            .join("")}</div>
-          <div class="row" style="justify-content:center">
-            ${
-              ctx.onWatchReplay
-                ? `<button id="h-replay" class="big-btn secondary">WATCH REPLAY</button>`
-                : ctx.onSaveReplayFile
-                  ? `<button id="h-replay-save" class="big-btn secondary" title="couldn't save to browser storage — download the file instead">SAVE REPLAY FILE</button>`
-                  : ""
-            }
-            ${
-              isHost
-                ? `<button id="h-rematch" class="big-btn">REMATCH</button>`
-                : ""
-            }
-          </div>
-          ${isHost ? "" : `<div class="hint">waiting for the host…</div>`}
-        </div>`;
-      const btn = document.getElementById("h-rematch");
-      if (btn) btn.onclick = ctx.onRematch;
-      const replayBtn = document.getElementById("h-replay");
-      if (replayBtn && ctx.onWatchReplay) replayBtn.onclick = ctx.onWatchReplay;
-      const saveBtn = document.getElementById("h-replay-save");
-      if (saveBtn && ctx.onSaveReplayFile) saveBtn.onclick = ctx.onSaveReplayFile;
+      const players: S.PlayerCard[] = phase.scores.map((s) => {
+        const m = ctx.metas.get(s.id);
+        return {
+          id: s.id,
+          name: m?.name ?? "?",
+          color: colorOf(m?.slot ?? 0),
+          bot: m?.bot ?? false,
+          difficulty: m?.difficulty ?? 0,
+          host: false,
+          wins: s.wins,
+          best: s.id === phase.winner,
+          removable: false,
+        };
+      });
+      S.overlay.set({
+        kind: "matchend",
+        winnerName: winner?.name ?? "???",
+        players,
+        isHost,
+        onRematch: ctx.onRematch,
+        onWatchReplay: ctx.onWatchReplay ?? null,
+        onSaveReplayFile: ctx.onSaveReplayFile ?? null,
+      });
     } else {
-      this.overlay.innerHTML = "";
+      S.overlay.set({ kind: "none" });
     }
+  }
+
+  private copyCode(code: string) {
+    navigator.clipboard?.writeText(code).catch(() => {});
+    S.lobbyCopied.set(true);
+    setTimeout(() => S.lobbyCopied.set(false), 1500);
   }
 }

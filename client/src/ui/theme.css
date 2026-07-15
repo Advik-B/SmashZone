@@ -1,0 +1,841 @@
+/* ============================================================================
+   SmashZone v2 — global theme.
+   Design tokens, resets, self-hosted fonts, the shared "arcade" primitives
+   (buttons / inputs / panels / keycap hints), the imperatively-driven HUD, the
+   touch controls (owned by game/touch.ts, unchanged), and the animation
+   keyframes that Svelte actions retrigger at runtime.  Screen-specific layout
+   lives in each component's scoped <style>.
+   ============================================================================ */
+
+/* ---- fonts (self-hosted; no CDN so the embedded binary works offline) ---- */
+@font-face {
+  font-family: "Lilita One";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/lilitaone-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Lilita One";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/lilitaone-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Rubik";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/assets/fonts/rubik-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Rubik";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/assets/fonts/rubik-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ---- design tokens ---- */
+:root {
+  --bg: #0a0d1c;
+  --text: #f2f4ff;
+  --muted: #9aa3d2;
+  --dim: #5f6899;
+  --ghost-text: #cfd6f6;
+
+  --pink: #ef5878;
+  --pink-hi: #ff6d8b;
+  --pink-border: #c04059;
+  --pink-border-btm: #93304a;
+  --pink-soft: #ff8d9d;
+  --title-pink: #ff6d88;
+
+  --gold: #ffd76e;
+
+  --panel: rgba(16, 20, 41, 0.82);
+  --panel-border: #2b3360;
+  --navy: #232b52;
+  --navy-hi: #2b3462;
+  --navy-border: #38416f;
+  --navy-btm: #10142e;
+  --input-bg: #0e1229;
+  --link: #8892e0;
+  --link-hi: #aab2f0;
+
+  --font-body: "Rubik", system-ui, sans-serif;
+  --font-display: "Lilita One", "Rubik", system-ui, sans-serif;
+}
+
+/* ---- reset + base ---- */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+a {
+  color: var(--link);
+  text-decoration: underline;
+}
+a:hover {
+  color: var(--link-hi);
+}
+
+::selection {
+  background: var(--pink);
+  color: #fff;
+}
+input::placeholder {
+  color: var(--dim);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #272f57;
+  border-radius: 5px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---- app layers ---- */
+#game {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+/* Default is passthrough (so gameplay clicks reach the canvas — pointer-lock to
+   aim, and brawling in the lobby while you wait). Interactive controls opt in;
+   HUD info text stays passthrough via its own rules below. */
+#ui button,
+#ui a,
+#ui input,
+#ui label,
+#ui select,
+#ui textarea,
+.sz-panel,
+.mode-modal {
+  pointer-events: auto;
+}
+
+/* ============================================================================
+   Shared "arcade" primitives — reused by every screen/modal component.
+   ============================================================================ */
+
+.sz-title {
+  font: 400 76px/1 var(--font-display);
+  letter-spacing: 3px;
+  color: var(--title-pink);
+  transform: rotate(-1.5deg);
+  text-shadow: 0 2px 0 #c14663, 0 4px 0 #8f3049, 0 6px 0 #5e1f31,
+    0 10px 22px rgba(0, 0, 0, 0.6);
+}
+
+.sz-eyebrow {
+  font: 800 11px var(--font-body);
+  letter-spacing: 6px;
+  color: var(--gold);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+  padding-left: 6px;
+}
+
+.sz-panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.sz-input {
+  font: 500 18px var(--font-body);
+  padding: 12px 16px;
+  border-radius: 11px;
+  border: 1px solid var(--panel-border);
+  background: var(--input-bg);
+  color: var(--text);
+  text-align: center;
+  outline: none;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45);
+}
+.sz-input:focus {
+  border-color: var(--pink);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45), 0 0 0 3px rgba(239, 88, 120, 0.22);
+}
+
+/* Extruded arcade button. Modifiers: .primary (pink), .ghost (navy). */
+.sz-btn {
+  font: 400 21px/1 var(--font-display);
+  letter-spacing: 1.5px;
+  padding: 15px 22px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--navy-border);
+  border-bottom: 4px solid var(--navy-btm);
+  background: var(--navy);
+  color: var(--ghost-text);
+  cursor: pointer;
+  transition: background 0.12s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+.sz-btn:hover {
+  background: var(--navy-hi);
+  color: var(--text);
+}
+.sz-btn:active {
+  border-bottom-width: 1px;
+  transform: translateY(3px);
+}
+.sz-btn:focus-visible {
+  outline: 2px solid var(--pink-soft);
+  outline-offset: 2px;
+}
+.sz-btn.primary {
+  border-color: var(--pink-border);
+  border-bottom-color: var(--pink-border-btm);
+  background: var(--pink);
+  color: #fff;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.28);
+}
+.sz-btn.primary:hover {
+  background: var(--pink-hi);
+  color: #fff;
+}
+
+/* Small square icon button (gear, copy, close, …). */
+.sz-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--navy-border);
+  border-bottom: 3px solid var(--navy-btm);
+  border-radius: 10px;
+  background: var(--navy);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.sz-iconbtn:hover {
+  background: var(--navy-hi);
+  color: var(--text);
+}
+.sz-iconbtn:active {
+  border-bottom-width: 1px;
+  transform: translateY(2px);
+}
+.sz-iconbtn svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+.hint {
+  font: 500 13px var(--font-body);
+  color: var(--dim);
+}
+.linklike {
+  background: none;
+  border: none;
+  color: var(--link);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+.error {
+  color: var(--pink-soft);
+  min-height: 17px;
+  font: 500 13px var(--font-body);
+  text-align: center;
+}
+
+/* Full-screen centered screen container (menu, lobby, match-end, replays). */
+.sz-screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 96px 16px 24px;
+}
+.sz-screen.scrim {
+  background: rgba(10, 13, 28, 0.76);
+}
+/* Lobby lets you brawl while you wait, so keep the arena visible behind a
+   lighter wash than the match-end scrim. */
+.sz-screen.scrim-soft {
+  background: radial-gradient(
+    ellipse at 50% 40%,
+    rgba(10, 13, 28, 0.2) 0%,
+    rgba(10, 13, 28, 0.5) 70%
+  );
+}
+
+/* ---- keycap hints (Xelu key images) ---- */
+.keys-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.key-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.key-hint > .keys {
+  display: inline-flex;
+  gap: 2px;
+}
+.key-hint .kc {
+  height: 28px;
+  width: auto;
+  display: block;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5));
+}
+.key-hint > span {
+  font: 600 13px var(--font-body);
+  color: var(--muted);
+}
+
+/* ============================================================================
+   HUD — rendered by Hud.svelte, populated from stores.  Kept global because
+   the elements carry stable ids/classes the tests query and Svelte actions add
+   animation classes to them at runtime.
+   ============================================================================ */
+#h-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+.hud-room {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: 700 13px var(--font-body);
+  letter-spacing: 1.5px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.hud-room .sep {
+  opacity: 0.45;
+}
+.hud-room svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+#h-ping {
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-scores {
+  position: absolute;
+  top: 14px;
+  left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+.hud-scores .row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 8px;
+  background: rgba(10, 13, 28, 0.5);
+  min-width: 150px;
+  font: 600 13px var(--font-body);
+  color: var(--text);
+}
+.hud-scores .row .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.hud-scores .row .bot-tag {
+  transform: scale(0.85);
+}
+.hud-scores .row.dead {
+  opacity: 0.4;
+}
+.hud-scores .row.disconnected {
+  opacity: 0.35;
+  filter: grayscale(0.6);
+}
+.hud-scores .row b {
+  margin-left: auto;
+  font: 400 15px var(--font-display);
+  color: var(--gold);
+  padding-left: 10px;
+}
+.hud-scores .row.bump {
+  animation: score-bump 0.6s ease-out;
+}
+
+.hud-feed {
+  position: absolute;
+  top: 44px;
+  right: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  pointer-events: none;
+}
+.feed-line {
+  font: 600 13px var(--font-body);
+  color: var(--text);
+  background: rgba(10, 13, 28, 0.55);
+  padding: 4px 9px;
+  border-radius: 7px;
+  animation: feed-in 0.18s ease-out;
+}
+.feed-line b {
+  font-weight: 800;
+}
+
+.hud-damage {
+  position: absolute;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  font: 400 56px/1 var(--font-display);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.45), 0 6px 14px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  color: rgb(255, 162, 142);
+}
+.hud-powerup {
+  position: absolute;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  font: 400 21px/1 var(--font-display);
+  letter-spacing: 3px;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  color: #ff9c4d;
+}
+.hud-combo {
+  position: absolute;
+  bottom: 142px;
+  left: 50%;
+  transform: translateX(-50%);
+  font: 400 26px/1 var(--font-display);
+  letter-spacing: 2px;
+  color: var(--gold);
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.5), 0 4px 10px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+.hud-center {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  pointer-events: none;
+}
+#h-title {
+  font: 400 68px/1 var(--font-display);
+  letter-spacing: 3px;
+  text-shadow: 0 4px 0 rgba(0, 0, 0, 0.4), 0 8px 20px rgba(0, 0, 0, 0.7);
+}
+.hud-sub {
+  font: 600 20px var(--font-body);
+  opacity: 0.85;
+  margin-top: 8px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+}
+.controls-hint {
+  position: absolute;
+  bottom: 12px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  pointer-events: none;
+  opacity: 0.78;
+}
+.controls-hint .keys-row {
+  gap: 14px;
+  justify-content: flex-end;
+}
+.controls-hint .key-hint .kc {
+  height: 22px;
+}
+.controls-hint .key-hint > span {
+  font-size: 12px;
+}
+
+/* ---- lobby / match-end overlay (rendered inside #h-overlay) ---- */
+#h-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ============================================================================
+   Bot tag pill (lobby + scores + match-end).
+   ============================================================================ */
+.bot-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 800 10px var(--font-body);
+  letter-spacing: 1px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #1c2247;
+  color: var(--muted);
+}
+.bot-tag svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+  flex: none;
+}
+.bot-tag.diff-0 { color: #7ee0a6; }
+.bot-tag.diff-1 { color: #9be8ff; }
+.bot-tag.diff-2 { color: #ffe08a; }
+.bot-tag.diff-3 { color: #ffb27a; }
+.bot-tag.diff-4 { color: #ff8d9d; }
+
+/* ============================================================================
+   Keyframes (retriggered from Svelte actions by re-adding these classes).
+   ============================================================================ */
+.combo-pop {
+  animation: combo-pop 0.16s cubic-bezier(0.2, 2, 0.4, 1);
+}
+@keyframes combo-pop {
+  from { transform: translateX(-50%) scale(1.6); }
+  to { transform: translateX(-50%) scale(1); }
+}
+.flash-out {
+  animation: flash-out 0.18s ease-out;
+}
+@keyframes flash-out {
+  from { opacity: var(--flash, 0.4); }
+  to { opacity: 0; }
+}
+.dmg-pop {
+  animation: dmg-pop 0.14s ease-out;
+}
+@keyframes dmg-pop {
+  from { transform: translateX(-50%) scale(1.35); }
+  to { transform: translateX(-50%) scale(1); }
+}
+.center-pop {
+  animation: center-pop 0.22s ease-out;
+}
+@keyframes center-pop {
+  from { transform: scale(2.2); opacity: 0; }
+  60% { transform: scale(0.94); opacity: 1; }
+  to { transform: scale(1); opacity: 1; }
+}
+@keyframes feed-in {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes score-bump {
+  0% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+
+/* ============================================================================
+   Touch controls — DOM owned by game/touch.ts (unchanged), appended to <body>.
+   ============================================================================ */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+#touch-controls .tc-look {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+#touch-controls .tc-stick-zone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 45%;
+  height: 65%;
+  touch-action: none;
+}
+#touch-controls .tc-stick-base {
+  position: absolute;
+  left: 20%;
+  top: 76%;
+  width: 124px;
+  height: 124px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid rgba(242, 244, 255, 0.35);
+  background: rgba(20, 24, 48, 0.35);
+  backdrop-filter: blur(2px);
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+#touch-controls .tc-stick-base.active {
+  opacity: 0.9;
+  transition: none;
+}
+#touch-controls .tc-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: rgba(242, 244, 255, 0.75);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  transform: translate(-50%, -50%);
+}
+#touch-controls .tc-buttons {
+  position: absolute;
+  right: calc(14px + env(safe-area-inset-right));
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  width: 190px;
+  height: 190px;
+}
+#touch-controls .tc-btn {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid rgba(242, 244, 255, 0.4);
+  background: rgba(20, 24, 48, 0.5);
+  color: rgba(242, 244, 255, 0.9);
+  font-family: var(--font-body);
+  font-weight: 800;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+#touch-controls .tc-btn svg {
+  width: 46%;
+  height: 46%;
+}
+#touch-controls .tc-btn.pressed {
+  background: rgba(239, 88, 120, 0.55);
+  border-color: rgba(255, 255, 255, 0.8);
+  transform: scale(0.94);
+}
+#touch-controls .tc-jump {
+  width: 88px;
+  height: 88px;
+  right: 0;
+  bottom: 0;
+  font-size: 15px;
+  letter-spacing: 1px;
+}
+#touch-controls .tc-light {
+  width: 62px;
+  height: 62px;
+  right: 104px;
+  bottom: 10px;
+  color: var(--gold);
+}
+#touch-controls .tc-heavy {
+  width: 62px;
+  height: 62px;
+  right: 84px;
+  bottom: 86px;
+  color: var(--pink-soft);
+}
+#touch-controls .tc-dash {
+  width: 54px;
+  height: 54px;
+  right: 4px;
+  bottom: 104px;
+  color: #9fd8ff;
+}
+
+/* ============================================================================
+   Shared modal shell (settings + input-mode prompt + export). Full-screen
+   backdrop that captures input; keeps the tested .mode-modal / .mode-card /
+   .q-btn hooks.
+   ============================================================================ */
+.mode-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 40px 16px;
+  background: rgba(6, 8, 17, 0.72);
+  backdrop-filter: blur(6px);
+  outline: none;
+  overflow: auto;
+}
+.mode-modal h2 {
+  font: 400 34px/1 var(--font-display);
+  letter-spacing: 2px;
+  color: var(--text);
+}
+.mode-cards {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 240px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--panel-border);
+  border-bottom: 4px solid var(--navy-btm);
+  background: #141936;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.mode-card:hover {
+  background: #1a2044;
+}
+.mode-card:focus,
+.mode-card:focus-visible,
+.mode-card.active {
+  outline: none;
+  border-color: var(--pink);
+  box-shadow: 0 0 0 3px rgba(239, 88, 120, 0.25);
+}
+.mode-card b {
+  font: 700 16px var(--font-body);
+}
+.mode-card span {
+  font: 500 12px var(--font-body);
+  color: var(--muted);
+}
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(420px, 90vw);
+}
+.sec-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 800 11px var(--font-body);
+  letter-spacing: 2px;
+  color: var(--dim);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font: 600 13px var(--font-body);
+  color: var(--muted);
+}
+.settings-row input[type="range"] {
+  width: 190px;
+  accent-color: var(--pink);
+}
+.settings-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--pink);
+}
+.quality-cards {
+  display: flex;
+  gap: 8px;
+}
+.q-btn {
+  flex: 1;
+  padding: 9px 0;
+  border-radius: 9px;
+  border: 1px solid var(--navy-border);
+  border-bottom: 3px solid var(--navy-btm);
+  background: var(--navy);
+  color: var(--ghost-text);
+  cursor: pointer;
+  font: 800 12px var(--font-body);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.q-btn:hover {
+  background: var(--navy-hi);
+}
+.q-btn.active {
+  background: var(--pink);
+  border-color: var(--pink-border);
+  border-bottom-color: var(--pink-border-btm);
+  color: #fff;
+}
+
+/* ---- responsive HUD ---- */
+@media (max-width: 820px) {
+  .hud-damage { font-size: 38px; bottom: 18px; }
+  .hud-powerup { font-size: 17px; bottom: 64px; }
+  .hud-combo { font-size: 20px; bottom: 100px; }
+  #h-title { font-size: 46px; }
+  .sz-title { font-size: 54px; }
+  .controls-hint { display: none; }
+}

@@ -11,7 +11,7 @@ import {
 afterEach(closeGamePages);
 
 describe("lobby", () => {
-  test("player list shows the host star and share code", async () => {
+  test("player list marks the host and prompts to share the code", async () => {
     const host = await newGamePage({ name: "Star" });
     const guest = await newGamePage({ name: "Buddy" });
     const code = await createRoom(host.page, "Star");
@@ -22,12 +22,12 @@ describe("lobby", () => {
       undefined,
       { timeout: 15_000 },
     );
-    // Host card carries the ★; the lobby prompts you to share the code.
-    const hostCard = await host.page.textContent(".pcard");
-    expect(hostCard).toContain("★");
+    // Host card carries the crown (v2: .pcard.host); the lobby prompts you to
+    // share the code.
+    expect(await host.page.locator(".pcard.host").count()).toBe(1);
     const overlay = (await host.page.textContent("#h-overlay")) ?? "";
     expect(overlay).toContain(code);
-    expect(overlay.toLowerCase()).toContain("share this code");
+    expect(overlay.toLowerCase()).toContain("share it");
   });
 
   test("host can add bots across all five difficulty tiers", async () => {
@@ -35,7 +35,9 @@ describe("lobby", () => {
     await createRoom(page, "Coach");
     for (const diff of [0, 1, 2, 3, 4]) await addBot(page, diff);
 
-    const tags = await page.$$eval(".bot-tag", (els) => els.map((e) => e.textContent ?? ""));
+    // Scope to the lobby roster cards — the HUD scoreboard also tags bots (v2),
+    // so an unscoped `.bot-tag` would double-count.
+    const tags = await page.$$eval(".pcard .bot-tag", (els) => els.map((e) => e.textContent ?? ""));
     expect(tags).toHaveLength(5);
     for (const tier of ["EASY", "MEDIUM", "HARD", "EXPERT", "IMPOSSIBLE"]) {
       expect(tags.some((t) => t.includes(tier))).toBe(true);
