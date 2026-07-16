@@ -49,6 +49,8 @@ export interface ExportRequest {
   sound: boolean;
   onProgress?: (frac: number) => void;
   onPhase?: (phase: ExportPhase) => void;
+  /** Reports the chosen encoder path once, e.g. "avc1.640033 h264 annexb". */
+  onCodec?: (desc: string) => void;
 }
 
 export interface ExportHandle {
@@ -166,6 +168,7 @@ async function exportMp4(
   const bitrate = bitrateFor(req.width, req.fps, req.quality);
   const picked = await pickCodec(req.width, req.height, req.fps, bitrate);
   if (!picked) throw new Error("this browser can't encode video (WebCodecs is required)");
+  req.onCodec?.(`${picked.codec} ${picked.container}${picked.annexb ? " annexb" : ""}`);
   // Overlap the (cached-after-first-use) ffmpeg core fetch with the render;
   // failures surface at mux time via the fresh loadFFmpeg() call.
   loadFFmpeg().catch(() => {});
@@ -214,7 +217,7 @@ async function exportMp4(
     1,
     Math.floor((req.endTick - req.startTick) / ticksPerFrame),
   );
-  const usPerFrame = 1e6 / req.fps;
+  const usPerFrame = Math.round(1e6 / req.fps); // integer so frame deltas stay uniform
 
   req.onPhase?.("render");
   try {
@@ -226,10 +229,11 @@ async function exportMp4(
       if (req.sound) setSfxCaptureTime(i / req.fps);
       player.exportStep(req.startTick + i * ticksPerFrame, 1 / req.fps, req.camera);
       // The frame timestamps feed encoder rate control only — final container
-      // timing comes from ffmpeg's declared framerate below.
+      // timing comes from ffmpeg below. Kept exactly uniform so any timing the
+      // encoder derives from them (VUI) is uniform too.
       const frame = new VideoFrame(player.renderer.canvas, {
-        timestamp: Math.round(i * usPerFrame),
-        duration: Math.round(usPerFrame),
+        timestamp: i * usPerFrame,
+        duration: usPerFrame,
       });
       encoder.encode(frame, { keyFrame: i % (req.fps * 2) === 0 });
       frame.close();
@@ -287,15 +291,24 @@ async function exportMp4(
       await ff.writeFile(videoName, video);
       if (wav) await ff.writeFile("audio.wav", wav);
       const args = ["-y"];
-      // Raw H.264 has no timestamps: -framerate declares exact CFR spacing
-      // and +genpts covers reordered (B-frame) streams. IVF carries its own
-      // 1/fps timebase.
+      // Force constant-frame-rate container timing regardless of what the
+      // encoder embedded. `-framerate` sets the raw-H.264 demuxer's baseline;
+      // the input `-r` discards any parser/VUI-derived timestamps and
+      // regenerates them at exactly 1/fps (+genpts covers reordered copies).
+      // IVF already carries its own 1/fps timebase.
       if (picked.container === "h264")
-        args.push("-fflags", "+genpts", "-framerate", String(req.fps));
+        args.push("-fflags", "+genpts", "-framerate", String(req.fps), "-r", String(req.fps));
       args.push("-i", videoName);
       if (wav) args.push("-i", "audio.wav", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest");
       else args.push("-c:v", "copy", "-an");
-      args.push("-movflags", "+faststart", "out.mp4");
+      // Whole-number frame durations in the track timescale → a single stts run.
+      args.push(
+        "-video_track_timescale",
+        String(req.fps * 1000),
+        "-movflags",
+        "+faststart",
+        "out.mp4",
+      );
 
       const ret = await ff.exec(args);
       if (ret !== 0)

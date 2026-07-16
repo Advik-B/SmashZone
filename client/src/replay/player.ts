@@ -52,7 +52,7 @@ export class ReplayPlayer {
   private exportSfx = false;
   private exportFollowYaw = 0;
   /** Set when the most recent export finished (e2e / UI feedback). */
-  lastExport: { size: number; type: string } | null = null;
+  lastExport: { size: number; type: string; codec?: string } | null = null;
 
   constructor(
     readonly dataset: ReplayDataset,
@@ -248,10 +248,18 @@ export class ReplayPlayer {
    * still-playing replay advance in between, breaking the restore.
    */
   startExport(opts: ExportRequest): ExportHandle {
-    const handle = exportVideo(this, opts);
+    let codec: string | undefined;
+    const userOnCodec = opts.onCodec;
+    const handle = exportVideo(this, {
+      ...opts,
+      onCodec: (desc) => {
+        codec = desc;
+        userOnCodec?.(desc);
+      },
+    });
     void handle.done
       .then((blob) => {
-        this.lastExport = { size: blob.size, type: blob.type };
+        this.lastExport = { size: blob.size, type: blob.type, codec };
       })
       .catch(() => {});
     return handle;

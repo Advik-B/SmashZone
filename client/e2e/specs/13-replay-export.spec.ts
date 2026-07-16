@@ -24,9 +24,10 @@ interface ExportProbe {
   ftyp: string;
   hasAudio: boolean;
   sttsEntries: number;
+  codec: string | undefined;
   exporting: boolean;
   playheadRestored: boolean;
-  lastExport: { size: number; type: string } | null;
+  lastExport: { size: number; type: string; codec?: string } | null;
 }
 
 describe("replay video export", () => {
@@ -103,6 +104,7 @@ describe("replay video export", () => {
           ftyp: String.fromCharCode(...bytes.slice(4, 8)),
           hasAudio: find("mp4a") >= 0,
           sttsEntries,
+          codec: r.lastExport?.codec,
           exporting: r.isExporting,
           playheadRestored: Math.abs(r.playheadTick - preSeek) < 1,
           lastExport: r.lastExport,
@@ -112,7 +114,7 @@ describe("replay video export", () => {
     // Sound on: full pipeline — WebCodecs video + offline audio + ffmpeg mux.
     const withSound = await driveExport(true);
     console.log(
-      `[13-export] sound=on type=${withSound.type} size=${withSound.size} stts=${withSound.sttsEntries}`,
+      `[13-export] sound=on codec=${withSound.codec} type=${withSound.type} size=${withSound.size} stts=${withSound.sttsEntries}`,
     );
     expect(withSound.type).toBe("video/mp4");
     expect(withSound.ftyp).toBe("ftyp");
@@ -125,7 +127,9 @@ describe("replay video export", () => {
 
     // Sound off: -an path, and the second run reuses the warm ffmpeg core.
     const silent = await driveExport(false);
-    console.log(`[13-export] sound=off type=${silent.type} size=${silent.size}`);
+    console.log(
+      `[13-export] sound=off codec=${silent.codec} type=${silent.type} size=${silent.size} stts=${silent.sttsEntries}`,
+    );
     expect(silent.type).toBe("video/mp4");
     expect(silent.ftyp).toBe("ftyp");
     expect(silent.hasAudio).toBe(false);
