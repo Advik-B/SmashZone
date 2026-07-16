@@ -1,26 +1,41 @@
-// Video export. Two pipelines:
+// Offline video export: one pipeline, frame-perfect, with sound.
 //
-// - "mp4": offline, frame-perfect. Steps the replay at exact 1/fps intervals
-//   in tick-space (never wall clock), captures each render as a VideoFrame,
-//   encodes with WebCodecs (H.264 probe, VP9 fallback) and muxes via
-//   mp4-muxer. The loop yields through a MessageChannel so it keeps encoding
-//   at full speed when the tab is backgrounded, and typically finishes
-//   faster than real time. Silent (SFX are a live WebAudio graph).
+// The replay is stepped at exact 1/fps intervals in tick-space (never wall
+// clock); each render is captured as a VideoFrame and encoded with WebCodecs
+// (hardware H.264 where available, VP9 fallback) into a raw elementary
+// stream. Sounds fired along the way land on a tape (game/audio.ts) and are
+// re-rendered through an OfflineAudioContext at the same frame times. ffmpeg
+// (wasm, single-threaded core) then muxes the stream at a declared framerate
+// together with the AAC soundtrack into a true constant-frame-rate MP4 —
+// container timing is independent of encode pacing, which is what keeps
+// playback smooth in normal video players. The loop yields through a
+// MessageChannel so it keeps encoding at full speed in a backgrounded tab,
+// and typically finishes faster than real time.
 //
-// - "webm": realtime capture through canvas.captureStream + MediaRecorder,
-//   with the game's master audio bus mixed in. Runs at 1x wall clock and
-//   needs the tab visible, but it's the path with sound — and the automatic
-//   fallback for browsers without WebCodecs.
-//
-// Either way the canvas is retargeted to the exact encode resolution for the
-// duration (renderer.setRenderSize/restoreSize) and the player's transport
-// state is restored afterwards.
+// The canvas is retargeted to the exact encode resolution for the duration
+// (renderer.setRenderSize/restoreSize) and the player's transport state is
+// restored afterwards.
 
 import constants from "../../../shared/constants.json";
-import { captureAudioStream } from "../game/audio";
+import {
+  renderExportAudio,
+  setSfxCaptureTime,
+  startSfxCapture,
+  stopSfxCapture,
+} from "../game/audio";
+import {
+  avccToAnnexB,
+  concatBytes,
+  ivfFrameHeader,
+  ivfHeader,
+  parseAvcC,
+  type AvcCInfo,
+} from "./bitstream";
+import { ffmpegLogTail, loadFFmpeg, terminateFFmpeg } from "./ffmpeg";
+import { audioBufferToWav } from "./wav";
 import type { ReplayPlayer } from "./player";
 
-const TICK_MS = 1000 / constants.tickRate;
+export type ExportPhase = "render" | "audio" | "mux";
 
 export interface ExportRequest {
   width: number;
@@ -30,8 +45,12 @@ export interface ExportRequest {
   targetId: number;
   startTick: number;
   endTick: number;
-  mode: "mp4" | "webm";
+  quality: "standard" | "high";
+  sound: boolean;
   onProgress?: (frac: number) => void;
+  onPhase?: (phase: ExportPhase) => void;
+  /** Reports the chosen encoder path once, e.g. "avc1.640033 h264 annexb". */
+  onCodec?: (desc: string) => void;
 }
 
 export interface ExportHandle {
@@ -49,39 +68,46 @@ export function webCodecsAvailable(): boolean {
   return typeof VideoEncoder !== "undefined" && typeof VideoFrame !== "undefined";
 }
 
-function bitrateFor(width: number, fps: number): number {
+function bitrateFor(width: number, fps: number, quality: "standard" | "high"): number {
   const base = width >= 1920 ? 10_000_000 : 6_000_000;
-  return fps >= 60 ? Math.round(base * 1.55) : base;
+  const scaled = fps >= 60 ? base * 1.55 : base;
+  return Math.round(quality === "high" ? scaled * 1.6 : scaled);
 }
 
-/** H.264 first (plays everywhere), VP9-in-MP4 second (Chromium/VLC-safe). */
+/**
+ * H.264 first (plays everywhere), VP9-in-MP4 second (Chromium/VLC-safe).
+ * Prefer encoders that emit Annex-B directly; fall back to AVCC output with
+ * manual conversion (bitstream.ts) where the config is rejected.
+ */
+type PickedCodec = { codec: string; container: "h264" | "ivf"; annexb: boolean };
+
+const H264_CODECS = ["avc1.640033", "avc1.64002a", "avc1.42003e"]; // High L5.1 covers 1080p60
+const VP9_CODECS = ["vp09.00.41.08", "vp09.00.10.08"];
+
 async function pickCodec(
   width: number,
   height: number,
   fps: number,
   bitrate: number,
-): Promise<{ codec: string; mux: "avc" | "vp9" } | null> {
+): Promise<PickedCodec | null> {
   if (!webCodecsAvailable()) return null;
-  const candidates: { codec: string; mux: "avc" | "vp9" }[] = [
-    { codec: "avc1.640033", mux: "avc" }, // High L5.1 (covers 1080p60)
-    { codec: "avc1.64002a", mux: "avc" },
-    { codec: "avc1.42003e", mux: "avc" },
-    { codec: "vp09.00.41.08", mux: "vp9" },
-    { codec: "vp09.00.10.08", mux: "vp9" },
-  ];
-  for (const c of candidates) {
+  const probe = async (config: VideoEncoderConfig) => {
     try {
-      const s = await VideoEncoder.isConfigSupported({
-        codec: c.codec,
-        width,
-        height,
-        bitrate,
-        framerate: fps,
-      });
-      if (s.supported) return c;
+      return (await VideoEncoder.isConfigSupported(config)).supported === true;
     } catch {
-      /* malformed-config throw = not supported */
+      return false; // malformed-config throw = not supported
     }
+  };
+  const base = { width, height, bitrate, framerate: fps };
+  for (const codec of H264_CODECS) {
+    if (await probe({ ...base, codec, avc: { format: "annexb" } }))
+      return { codec, container: "h264", annexb: true };
+  }
+  for (const codec of H264_CODECS) {
+    if (await probe({ ...base, codec })) return { codec, container: "h264", annexb: false };
+  }
+  for (const codec of VP9_CODECS) {
+    if (await probe({ ...base, codec })) return { codec, container: "ivf", annexb: false };
   }
   return null;
 }
@@ -95,22 +121,29 @@ function nextTask(): Promise<void> {
   });
 }
 
+function bufferBytes(b: AllowSharedBufferSource): Uint8Array {
+  if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  return new Uint8Array(b);
+}
+
 export function exportVideo(player: ReplayPlayer, req: ExportRequest): ExportHandle {
   let cancelled = false;
-  let stopRealtime: (() => void) | null = null;
+  // True only while ffmpeg holds in-flight work for THIS export, so a cancel
+  // after success (the dialog's unconditional cancel-on-close) never kills
+  // the warm instance.
+  const mux = { active: false };
 
   const done = (async () => {
     const resumePlayhead = player.playheadTick;
     player.renderer.setRenderSize(req.width, req.height);
-    player.beginExport(req.startTick, req.targetId, req.mode === "webm");
+    // Capture must be on before beginExport: its drawWorld(0) can already
+    // fire a countdown beep at t=0.
+    if (req.sound) startSfxCapture();
+    player.beginExport(req.startTick, req.targetId, req.sound);
     try {
-      if (req.mode === "mp4") {
-        return await exportMp4(player, req, () => cancelled);
-      }
-      return await exportWebm(player, req, () => cancelled, (stop) => {
-        stopRealtime = stop;
-      });
+      return await exportMp4(player, req, () => cancelled, mux);
     } finally {
+      stopSfxCapture(); // idempotent — tape mode must never outlive the export
       player.endExport();
       player.renderer.restoreSize();
       player.seek(resumePlayhead);
@@ -121,7 +154,7 @@ export function exportVideo(player: ReplayPlayer, req: ExportRequest): ExportHan
     done,
     cancel() {
       cancelled = true;
-      stopRealtime?.();
+      if (mux.active) terminateFFmpeg(); // rejects the in-flight exec
     },
   };
 }
@@ -130,21 +163,41 @@ async function exportMp4(
   player: ReplayPlayer,
   req: ExportRequest,
   isCancelled: () => boolean,
+  mux: { active: boolean },
 ): Promise<Blob> {
-  const bitrate = bitrateFor(req.width, req.fps);
+  const bitrate = bitrateFor(req.width, req.fps, req.quality);
   const picked = await pickCodec(req.width, req.height, req.fps, bitrate);
-  if (!picked) throw new Error("this browser can't encode MP4 — use the WebM export");
-  const { Muxer, ArrayBufferTarget } = await import("mp4-muxer");
+  if (!picked) throw new Error("this browser can't encode video (WebCodecs is required)");
+  req.onCodec?.(`${picked.codec} ${picked.container}${picked.annexb ? " annexb" : ""}`);
+  // Overlap the (cached-after-first-use) ffmpeg core fetch with the render;
+  // failures surface at mux time via the fresh loadFFmpeg() call.
+  loadFFmpeg().catch(() => {});
 
-  const target = new ArrayBufferTarget();
-  const muxer = new Muxer({
-    target,
-    video: { codec: picked.mux, width: req.width, height: req.height },
-    fastStart: "in-memory",
-  });
+  const parts: Uint8Array[] = [];
+  let avcc: AvcCInfo | null = null;
+  let chunkCount = 0;
   let encError: unknown = null;
+
   const encoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    output: (chunk, meta) => {
+      const bytes = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(bytes);
+      if (picked.container === "ivf") {
+        parts.push(ivfFrameHeader(bytes.length, chunkCount), bytes);
+      } else if (picked.annexb) {
+        parts.push(bytes);
+      } else {
+        const desc = meta?.decoderConfig?.description;
+        if (desc) avcc = parseAvcC(bufferBytes(desc));
+        if (!avcc) {
+          encError ??= new Error("H.264 encoder provided no AVCC description");
+          return;
+        }
+        if (chunk.type === "key") parts.push(avcc.headers);
+        parts.push(avccToAnnexB(bytes, avcc.nalLengthSize));
+      }
+      chunkCount++;
+    },
     error: (e) => {
       encError = e;
     },
@@ -156,6 +209,7 @@ async function exportMp4(
     bitrate,
     framerate: req.fps,
     latencyMode: "quality",
+    ...(picked.annexb ? { avc: { format: "annexb" as const } } : {}),
   });
 
   const ticksPerFrame = constants.tickRate / req.fps;
@@ -163,31 +217,36 @@ async function exportMp4(
     1,
     Math.floor((req.endTick - req.startTick) / ticksPerFrame),
   );
-  const usPerFrame = 1e6 / req.fps;
+  const usPerFrame = Math.round(1e6 / req.fps); // integer so frame deltas stay uniform
 
+  req.onPhase?.("render");
   try {
     for (let i = 0; i < totalFrames; i++) {
       if (isCancelled()) throw new ExportCancelled();
       if (encError) throw encError;
+      // Tape timestamps ride the frame clock: everything exportStep fires
+      // (events, tile falls, countdown) lands at this frame's time.
+      if (req.sound) setSfxCaptureTime(i / req.fps);
       player.exportStep(req.startTick + i * ticksPerFrame, 1 / req.fps, req.camera);
+      // The frame timestamps feed encoder rate control only — final container
+      // timing comes from ffmpeg below. Kept exactly uniform so any timing the
+      // encoder derives from them (VUI) is uniform too.
       const frame = new VideoFrame(player.renderer.canvas, {
-        timestamp: Math.round(i * usPerFrame),
-        duration: Math.round(usPerFrame),
+        timestamp: i * usPerFrame,
+        duration: usPerFrame,
       });
       encoder.encode(frame, { keyFrame: i % (req.fps * 2) === 0 });
       frame.close();
       // Backpressure: don't let raw frames pile up ahead of the encoder.
       while (encoder.encodeQueueSize > 4 && !encError) await nextTask();
       if (i % 8 === 0) {
-        req.onProgress?.(i / totalFrames);
+        req.onProgress?.(0.82 * (i / totalFrames));
         await nextTask();
       }
     }
     if (encError) throw encError;
     await encoder.flush();
-    muxer.finalize();
-    req.onProgress?.(1);
-    return new Blob([target.buffer], { type: "video/mp4" });
+    if (encError) throw encError;
   } finally {
     try {
       encoder.close();
@@ -195,74 +254,92 @@ async function exportMp4(
       /* already closed by flush error */
     }
   }
-}
 
-async function exportWebm(
-  player: ReplayPlayer,
-  req: ExportRequest,
-  isCancelled: () => boolean,
-  registerStop: (stop: () => void) => void,
-): Promise<Blob> {
-  const canvas = player.renderer.canvas;
-  const stream = canvas.captureStream(0); // frames pushed manually
-  const videoTrack = stream.getVideoTracks()[0] as MediaStreamTrack & {
-    requestFrame?: () => void;
-  };
-  const audio = captureAudioStream();
-  if (audio) for (const t of audio.stream.getAudioTracks()) stream.addTrack(t);
+  // Soundtrack: replay the captured tape offline at the same frame times.
+  const durationSec = totalFrames / req.fps;
+  let wav: Uint8Array | null = null;
+  if (req.sound) {
+    if (isCancelled()) throw new ExportCancelled();
+    req.onPhase?.("audio");
+    req.onProgress?.(0.82);
+    const tape = stopSfxCapture() ?? [];
+    wav = audioBufferToWav(await renderExportAudio(tape, durationSec));
+  }
 
-  const mime =
-    ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((m) =>
-      MediaRecorder.isTypeSupported(m),
-    ) ?? "";
-  const rec = new MediaRecorder(stream, {
-    ...(mime ? { mimeType: mime } : {}),
-    videoBitsPerSecond: bitrateFor(req.width, req.fps),
-  });
-  const chunks: Blob[] = [];
-  rec.ondataavailable = (e) => {
-    if (e.data.size > 0) chunks.push(e.data);
-  };
-  const stopped = new Promise<void>((resolve) => {
-    rec.onstop = () => resolve();
-  });
-  rec.start(250);
-
-  // Real-time pacing: advance the playhead by wall-clock time at 1x and push
-  // a captured frame per rAF. (rAF throttles when hidden — the dialog warns.)
-  const span = req.endTick - req.startTick;
-  let raf = 0;
-  let finished: () => void = () => {};
-  const finishedP = new Promise<void>((resolve) => {
-    finished = resolve;
-  });
-  registerStop(() => {
-    cancelAnimationFrame(raf);
-    finished();
-  });
-  const t0 = performance.now();
-  let lastNow = t0;
-  const pump = (now: number) => {
-    const tick = req.startTick + (now - t0) / TICK_MS;
-    const dtSec = Math.min(0.1, (now - lastNow) / 1000);
-    lastNow = now;
-    player.exportStep(tick, dtSec, req.camera);
-    videoTrack.requestFrame?.();
-    req.onProgress?.(Math.min(1, (tick - req.startTick) / span));
-    if (tick >= req.endTick || isCancelled()) {
-      finished();
-      return;
-    }
-    raf = requestAnimationFrame(pump);
-  };
-  raf = requestAnimationFrame(pump);
-  await finishedP;
-
-  rec.stop();
-  await stopped;
-  audio?.stop();
-  for (const t of stream.getTracks()) t.stop();
   if (isCancelled()) throw new ExportCancelled();
-  req.onProgress?.(1);
-  return new Blob(chunks, { type: mime.split(";")[0] || "video/webm" });
+  req.onPhase?.("mux");
+  req.onProgress?.(0.88);
+  let ff;
+  try {
+    ff = await loadFFmpeg();
+  } catch (e) {
+    throw new Error(
+      `couldn't load the mp4 encoder: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  const videoName = picked.container === "ivf" ? "video.ivf" : "video.h264";
+  const video =
+    picked.container === "ivf"
+      ? concatBytes([ivfHeader(req.width, req.height, req.fps, chunkCount), ...parts])
+      : concatBytes(parts);
+  parts.length = 0; // free the duplicates before MEMFS gets its copy
+
+  mux.active = true;
+  try {
+    try {
+      await ff.writeFile(videoName, video);
+      if (wav) await ff.writeFile("audio.wav", wav);
+      const args = ["-y"];
+      // Force constant-frame-rate container timing regardless of what the
+      // encoder embedded. `-framerate` sets the raw-H.264 demuxer's baseline;
+      // the input `-r` discards any parser/VUI-derived timestamps and
+      // regenerates them at exactly 1/fps (+genpts covers reordered copies).
+      // IVF already carries its own 1/fps timebase.
+      if (picked.container === "h264")
+        args.push("-fflags", "+genpts", "-framerate", String(req.fps), "-r", String(req.fps));
+      args.push("-i", videoName);
+      if (wav) args.push("-i", "audio.wav", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest");
+      else args.push("-c:v", "copy", "-an");
+      // Whole-number frame durations in the track timescale → a single stts run.
+      args.push(
+        "-video_track_timescale",
+        String(req.fps * 1000),
+        "-movflags",
+        "+faststart",
+        "out.mp4",
+      );
+
+      const ret = await ff.exec(args);
+      if (ret !== 0)
+        throw new Error(`mp4 mux failed (ffmpeg exit ${ret})\n${ffmpegLogTail(4)}`);
+      // Drop the inputs before reading the output to cap MEMFS peak size.
+      for (const f of [videoName, "audio.wav"]) {
+        try {
+          await ff.deleteFile(f);
+        } catch {
+          /* not written */
+        }
+      }
+      const data = await ff.readFile("out.mp4");
+      req.onProgress?.(1);
+      const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+      return new Blob([bytes as BlobPart], { type: "video/mp4" });
+    } catch (e) {
+      if (e instanceof ExportCancelled) throw e;
+      if (isCancelled()) throw new ExportCancelled(); // terminate() rejected us
+      throw e;
+    }
+  } finally {
+    mux.active = false;
+    // Best-effort cleanup; a failed exec must not strand files in the cached
+    // instance (a terminated one lost its FS anyway).
+    for (const f of [videoName, "audio.wav", "out.mp4"]) {
+      try {
+        await ff.deleteFile(f);
+      } catch {
+        /* missing or terminated */
+      }
+    }
+  }
 }

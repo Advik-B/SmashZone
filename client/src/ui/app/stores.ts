@@ -246,7 +246,7 @@ export interface ExportOption {
   disabled?: boolean;
 }
 export interface ExportGroup {
-  key: "camera" | "size" | "fps" | "format";
+  key: "camera" | "size" | "fps" | "quality" | "sound";
   label: string;
   options: ExportOption[];
   initial: string;
@@ -260,7 +260,8 @@ export interface ExportSelection {
   camera: string;
   size: string;
   fps: string;
-  format: string;
+  quality: string;
+  sound: string;
   inTick: number;
   outTick: number;
   name: string;
@@ -275,7 +276,7 @@ export interface ExportModalState {
   presets: ExportRangePreset[];
   defaultName: string;
   note: string;
-  fmtExt: (format: string) => string;
+  canExport: boolean;
   durationLabel: (inTick: number, outTick: number) => string;
   tickLabel: (tick: number) => string;
   onClose: () => void;

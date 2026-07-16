@@ -57,16 +57,18 @@
       camera: sel.camera,
       size: sel.size,
       fps: sel.fps,
-      format: sel.format,
+      quality: sel.quality,
+      sound: sel.sound,
       inTick,
       outTick,
       name,
     });
   }
 
-  const ext = $derived(data.fmtExt(sel.format));
   const summary = $derived(
-    `${sel.size === "1080" ? "1080p" : "720p"} · ${sel.fps}fps · ${sel.format.toUpperCase()} · ${data.durationLabel(inTick, outTick)}`,
+    `${sel.size === "1080" ? "1080p" : "720p"} · ${sel.fps}fps · ${
+      sel.quality === "high" ? "high quality" : "standard"
+    } · ${sel.sound === "off" ? "muted" : "sound"} · ${data.durationLabel(inTick, outTick)}`,
   );
 </script>
 
@@ -156,7 +158,7 @@
         <span class="sec-label">FILE</span>
         <div class="ex-name">
           <input bind:value={name} spellcheck="false" />
-          <span class="ex-ext">.{ext}</span>
+          <span class="ex-ext">.mp4</span>
         </div>
         <span class="ex-summary">{summary}</span>
       </div>
@@ -172,7 +174,9 @@
 
     <div class="ex-foot">
       {#if !$exExporting}
-        <button id="ex-start" class="sz-btn primary" onclick={render}>RENDER CLIP</button>
+        <button id="ex-start" class="sz-btn primary" disabled={!data.canExport} onclick={render}>
+          RENDER CLIP
+        </button>
       {/if}
       <button class="sz-btn" onclick={data.onClose}>{$exExporting ? "CANCEL" : "CLOSE"}</button>
     </div>
