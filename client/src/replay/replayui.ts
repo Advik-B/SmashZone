@@ -13,6 +13,7 @@ import {
   type ExportHandle,
   type ExportRequest,
 } from "./export";
+import { prefetchFFmpeg } from "./ffmpeg";
 import { downloadBlob, replayFilename } from "./download";
 import { BUILD_ID, type ReplayMarker } from "./format";
 import type { ReplayMeta } from "./store";
@@ -308,6 +309,8 @@ export class ReplayViewerUI {
     const players = ds.allPlayers();
     const targetName = players.find((x) => x.id === p.followTargetId)?.name ?? "player";
     const canExport = webCodecsAvailable();
+    // Warm the ffmpeg core (~32 MB, cached) while the user trims the range.
+    if (canExport) prefetchFFmpeg();
     const span = Math.max(1, ds.endTick - ds.startTick);
     const koPcts = ds.markers
       .filter((m) => m.kind === "ko")
@@ -442,6 +445,14 @@ export class ReplayViewerUI {
       quality: sel.quality === "high" ? "high" : "standard",
       sound: sel.sound !== "off",
       onProgress: (f) => S.exProgress.set(f),
+      onPhase: (ph) =>
+        S.exStatus.set(
+          ph === "render"
+            ? "rendering frames…"
+            : ph === "audio"
+              ? "rendering audio…"
+              : "encoding mp4…",
+        ),
     };
     this.previewPlaying = false;
     S.exPreviewing.set(false);
