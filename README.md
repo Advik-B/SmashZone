@@ -90,10 +90,10 @@ menu, or hit **WATCH REPLAY** right after a match:
 - **Export video**: frame-perfect MP4 rendered offline (usually faster than
   real time), or real-time WebM with game audio. Follow-cam or player-cam
   presets, 720p/1080p, 30/60 fps, whole match or a single round.
-- **Library**: the newest 10 replays are kept in browser storage (pin
-  favorites to protect them), and any replay travels as a `.szr` file —
-  save it, send it, import it on another machine. Replays are tied to the
-  game build that recorded them; the viewer warns when they differ.
+- **Library**: every match you record is kept in browser storage until you
+  delete it (pin favorites to find them fast), and any replay travels as a
+  `.szr` file — save it, send it, import it on another machine. Replays are
+  tied to the game build that recorded them; the viewer warns when they differ.
 
 The server never records anything — snapshots are already byte-identical for
 every client, so your copy of the match *is* the match.

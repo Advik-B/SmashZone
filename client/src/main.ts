@@ -122,9 +122,7 @@ async function main() {
           used >= 1 << 20
             ? `${(used / (1 << 20)).toFixed(1)} MB`
             : `${Math.max(0, Math.round(used / 1024))} KB`;
-        storageLine = `${items.length} replay${
-          items.length === 1 ? "" : "s"
-        } · ${size} · newest ${replayStore.MAX_REPLAYS} unpinned are kept`;
+        storageLine = `${items.length} replay${items.length === 1 ? "" : "s"} · ${size}`;
       }
     } catch (e) {
       notice = notice || `replay storage unavailable: ${e instanceof Error ? e.message : e}`;
