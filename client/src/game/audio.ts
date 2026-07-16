@@ -2,6 +2,12 @@
 // fallback so the game still sounds right if a sample fails to load. One shared
 // AudioContext, resumed on the first user gesture. Everything routes through a
 // master gain (volume/mute); music has its own sub-gain (independent slider).
+//
+// Every one-shot is a *recipe*: a function scheduling nodes onto an AudioSink
+// { ctx, bus, t }. Live play points the sink at the shared context's master
+// bus at currentTime. The video exporter instead captures a tape of
+// (name, arg, t) entries and replays the same recipes into an
+// OfflineAudioContext (renderExportAudio) — deterministic export sound.
 
 import { pitchVar } from "./juice";
 
@@ -133,18 +139,26 @@ export async function loadAudio(): Promise<void> {
   await Promise.allSettled([...SFX_FILES, ...MUSIC_FILES].map(loadOne));
 }
 
-/** Play a loaded one-shot sample. Returns false if it isn't available. */
-function play(name: string, gain = 1, rate = 1): boolean {
+// ---- Recipe plumbing ------------------------------------------------------
+
+/** Where and when a recipe schedules its nodes (live bus or offline render). */
+interface AudioSink {
+  ctx: BaseAudioContext;
+  bus: AudioNode;
+  t: number;
+}
+
+/** Schedule a loaded one-shot sample. Returns false if it isn't available. */
+function playAt(s: AudioSink, name: string, gain = 1, rate = 1): boolean {
   const buf = buffers.get(name);
-  const a = ctx;
-  if (!buf || !a || a.state !== "running") return false;
-  const src = a.createBufferSource();
+  if (!buf) return false;
+  const src = s.ctx.createBufferSource();
   src.buffer = buf;
   src.playbackRate.value = rate;
-  const g = a.createGain();
+  const g = s.ctx.createGain();
   g.gain.value = gain;
-  src.connect(g).connect(master());
-  src.start(a.currentTime);
+  src.connect(g).connect(s.bus);
+  src.start(s.t);
   return true;
 }
 
@@ -222,15 +236,17 @@ export function isMusicMuted(): boolean {
 
 // ---- Procedural fallback synthesis ----------------------------------------
 
-let noiseBuf: AudioBuffer | null = null;
-function noise(): AudioBuffer {
-  const a = ac();
-  if (!noiseBuf) {
-    noiseBuf = a.createBuffer(1, a.sampleRate, a.sampleRate);
-    const d = noiseBuf.getChannelData(0);
+/** 1 s of white noise per context (offline renders get their own, GC-able). */
+const noiseBufs = new WeakMap<BaseAudioContext, AudioBuffer>();
+function noiseFor(c: BaseAudioContext): AudioBuffer {
+  let buf = noiseBufs.get(c);
+  if (!buf) {
+    buf = c.createBuffer(1, c.sampleRate, c.sampleRate);
+    const d = buf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    noiseBufs.set(c, buf);
   }
-  return noiseBuf;
+  return buf;
 }
 
 function env(gainNode: GainNode, t0: number, peak: number, decay: number) {
@@ -240,138 +256,248 @@ function env(gainNode: GainNode, t0: number, peak: number, decay: number) {
   g.exponentialRampToValueAtTime(0.0001, t0 + decay);
 }
 
-function tone(
+function toneAt(
+  s: AudioSink,
   freq0: number,
   freq1: number,
   dur: number,
   type: OscillatorType = "square",
   vol = 0.15,
 ) {
-  const a = ac();
-  if (a.state !== "running") return;
-  const t = a.currentTime;
-  const osc = a.createOscillator();
-  const g = a.createGain();
+  const osc = s.ctx.createOscillator();
+  const g = s.ctx.createGain();
   osc.type = type;
-  osc.frequency.setValueAtTime(freq0, t);
-  osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq1), t + dur);
-  env(g, t, vol, dur);
-  osc.connect(g).connect(master());
-  osc.start(t);
-  osc.stop(t + dur + 0.05);
+  osc.frequency.setValueAtTime(freq0, s.t);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq1), s.t + dur);
+  env(g, s.t, vol, dur);
+  osc.connect(g).connect(s.bus);
+  osc.start(s.t);
+  osc.stop(s.t + dur + 0.05);
 }
 
-function thump(dur: number, vol: number, filterHz: number) {
-  const a = ac();
-  if (a.state !== "running") return;
-  const t = a.currentTime;
-  const src = a.createBufferSource();
-  src.buffer = noise();
-  const f = a.createBiquadFilter();
+function thumpAt(s: AudioSink, dur: number, vol: number, filterHz: number) {
+  const src = s.ctx.createBufferSource();
+  src.buffer = noiseFor(s.ctx);
+  const f = s.ctx.createBiquadFilter();
   f.type = "lowpass";
   f.frequency.value = filterHz;
-  const g = a.createGain();
-  env(g, t, vol, dur);
-  src.connect(f).connect(g).connect(master());
-  src.start(t);
-  src.stop(t + dur + 0.05);
+  const g = s.ctx.createGain();
+  env(g, s.t, vol, dur);
+  src.connect(f).connect(g).connect(s.bus);
+  src.start(s.t);
+  src.stop(s.t + dur + 0.05);
 }
 
-// ---- SFX API (sampled where available, else procedural) -------------------
+// ---- SFX recipes (sampled where available, else procedural) ----------------
 // Repeated one-shots get a small random pitch variance (and hits accept a
 // combo pitch multiplier) so back-to-back plays don't machine-gun.
 
-export const sfx = {
+const RECIPES = {
   // Swings stay procedural (no clean CC0 whoosh); pitched per attack type.
-  swing: () => {
+  swing: (s: AudioSink) => {
     const r = pitchVar();
-    tone(700 * r, 200 * r, 0.09, "sawtooth", 0.05);
+    toneAt(s, 700 * r, 200 * r, 0.09, "sawtooth", 0.05);
   },
-  swingHeavy: () => {
+  swingHeavy: (s: AudioSink) => {
     const r = pitchVar();
-    tone(460 * r, 130 * r, 0.14, "sawtooth", 0.06);
+    toneAt(s, 460 * r, 130 * r, 0.14, "sawtooth", 0.06);
   },
-  swingAir: () => {
+  swingAir: (s: AudioSink) => {
     const r = pitchVar();
-    tone(900 * r, 320 * r, 0.11, "sawtooth", 0.05);
+    toneAt(s, 900 * r, 320 * r, 0.11, "sawtooth", 0.05);
   },
-  hitLight: (pitch = 1) => {
+  hitLight: (s: AudioSink, pitch = 1) => {
     const r = pitch * pitchVar();
-    if (play("hit_light", 1, r)) return;
-    thump(0.12, 0.4, 1800 * r);
-    tone(300 * r, 90 * r, 0.12, "square", 0.12);
+    if (playAt(s, "hit_light", 1, r)) return;
+    thumpAt(s, 0.12, 0.4, 1800 * r);
+    toneAt(s, 300 * r, 90 * r, 0.12, "square", 0.12);
   },
-  hitHeavy: (pitch = 1) => {
+  hitHeavy: (s: AudioSink, pitch = 1) => {
     const r = pitch * pitchVar();
-    if (play("hit_heavy", 1, r)) {
-      thump(0.18, 0.25, 320); // sub-bass crunch the sample lacks
+    if (playAt(s, "hit_heavy", 1, r)) {
+      thumpAt(s, 0.18, 0.25, 320); // sub-bass crunch the sample lacks
       return;
     }
-    thump(0.22, 0.55, 1200);
-    tone(200 * r, 50 * r, 0.25, "square", 0.18);
+    thumpAt(s, 0.22, 0.55, 1200);
+    toneAt(s, 200 * r, 50 * r, 0.25, "square", 0.18);
   },
-  jump: () => {
+  jump: (s: AudioSink) => {
     const r = pitchVar();
-    if (play("jump", 0.6, r)) return;
-    tone(250 * r, 520 * r, 0.14, "triangle", 0.1);
+    if (playAt(s, "jump", 0.6, r)) return;
+    toneAt(s, 250 * r, 520 * r, 0.14, "triangle", 0.1);
   },
-  dash: () => {
+  dash: (s: AudioSink) => {
     const r = pitchVar();
-    if (play("dash", 0.6, r)) return;
-    tone(900 * r, 1400 * r, 0.12, "sawtooth", 0.06);
+    if (playAt(s, "dash", 0.6, r)) return;
+    toneAt(s, 900 * r, 1400 * r, 0.12, "sawtooth", 0.06);
   },
-  slam: () => {
+  slam: (s: AudioSink) => {
     const r = pitchVar(0.04);
-    if (play("slam", 1, r)) return;
-    thump(0.35, 0.6, 500);
-    tone(140, 40, 0.35, "sine", 0.25);
+    if (playAt(s, "slam", 1, r)) return;
+    thumpAt(s, 0.35, 0.6, 500);
+    toneAt(s, 140, 40, 0.35, "sine", 0.25);
   },
-  death: () => {
+  death: (s: AudioSink) => {
     const r = pitchVar(0.04);
-    if (play("death", 1, r)) {
+    if (playAt(s, "death", 1, r)) {
       // Layer weight under the sample: sub-bass hit + falling whine.
-      thump(0.4, 0.35, 300);
-      tone(220, 40, 0.5, "sine", 0.1);
+      thumpAt(s, 0.4, 0.35, 300);
+      toneAt(s, 220, 40, 0.5, "sine", 0.1);
       return;
     }
-    tone(600 * r, 60, 0.6, "sawtooth", 0.15);
+    toneAt(s, 600 * r, 60, 0.6, "sawtooth", 0.15);
   },
-  tileFall: () => thump(0.3, 0.18, 700),
-  count: () => tone(440, 440, 0.1, "square", 0.1),
-  go: () => {
-    tone(660, 660, 0.18, "square", 0.12);
-    tone(880, 880, 0.28, "square", 0.1);
+  tileFall: (s: AudioSink) => thumpAt(s, 0.3, 0.18, 700),
+  count: (s: AudioSink) => toneAt(s, 440, 440, 0.1, "square", 0.1),
+  go: (s: AudioSink) => {
+    toneAt(s, 660, 660, 0.18, "square", 0.12);
+    toneAt(s, 880, 880, 0.28, "square", 0.1);
   },
-  win: () => {
-    if (play("win")) return;
-    const seq = [523, 659, 784, 1047];
-    seq.forEach((f, i) =>
-      setTimeout(() => tone(f, f, 0.22, "triangle", 0.14), i * 130),
+  win: (s: AudioSink) => {
+    if (playAt(s, "win")) return;
+    // Fanfare scheduled on the audio clock, not setTimeout (offline-safe).
+    [523, 659, 784, 1047].forEach((f, i) =>
+      toneAt({ ...s, t: s.t + i * 0.13 }, f, f, 0.22, "triangle", 0.14),
     );
   },
-  pickupSpawn: () => {
-    if (play("pickup_spawn", 0.7)) return;
-    tone(880, 1320, 0.25, "sine", 0.09);
+  pickupSpawn: (s: AudioSink) => {
+    if (playAt(s, "pickup_spawn", 0.7)) return;
+    toneAt(s, 880, 1320, 0.25, "sine", 0.09);
   },
-  pickup: () => {
+  pickup: (s: AudioSink) => {
     const r = pitchVar(0.04);
-    if (play("pickup", 1, r)) return;
-    tone(523, 1047, 0.16, "triangle", 0.14);
-    setTimeout(() => tone(1047, 1568, 0.2, "triangle", 0.1), 90);
+    if (playAt(s, "pickup", 1, r)) return;
+    toneAt(s, 523, 1047, 0.16, "triangle", 0.14);
+    toneAt({ ...s, t: s.t + 0.09 }, 1047, 1568, 0.2, "triangle", 0.1);
   },
-  shoot: () => {
+  shoot: (s: AudioSink) => {
     const r = pitchVar();
-    if (play("shoot", 0.6, r)) return;
-    tone(1200 * r, 280 * r, 0.09, "sawtooth", 0.12);
-    thump(0.05, 0.18, 3200);
+    if (playAt(s, "shoot", 0.6, r)) return;
+    toneAt(s, 1200 * r, 280 * r, 0.09, "sawtooth", 0.12);
+    thumpAt(s, 0.05, 0.18, 3200);
   },
-  throwBomb: () => {
-    if (play("throw_bomb", 0.7)) return;
-    tone(280, 520, 0.16, "sine", 0.11);
+  throwBomb: (s: AudioSink) => {
+    if (playAt(s, "throw_bomb", 0.7)) return;
+    toneAt(s, 280, 520, 0.16, "sine", 0.11);
   },
-  explosion: () => {
-    if (play("explosion")) return;
-    thump(0.5, 0.7, 420);
-    tone(130, 32, 0.5, "sawtooth", 0.2);
+  explosion: (s: AudioSink) => {
+    if (playAt(s, "explosion")) return;
+    thumpAt(s, 0.5, 0.7, 420);
+    toneAt(s, 130, 32, 0.5, "sawtooth", 0.2);
   },
+} satisfies Record<string, (s: AudioSink, arg?: number) => void>;
+
+type SfxName = keyof typeof RECIPES;
+
+function runRecipe(name: SfxName, s: AudioSink, arg?: number): void {
+  (RECIPES[name] as (s: AudioSink, arg?: number) => void)(s, arg);
+}
+
+// ---- Export tape ------------------------------------------------------------
+// While capturing, sfx calls record (name, arg, t) instead of sounding; the
+// exporter replays the tape into an OfflineAudioContext afterwards.
+
+export interface SfxTapeEntry {
+  name: SfxName;
+  arg: number | undefined;
+  t: number;
+}
+
+let tape: SfxTapeEntry[] | null = null;
+let tapeT = 0;
+
+export function startSfxCapture(): void {
+  tape = [];
+  tapeT = 0;
+}
+
+/** Timeline position (seconds) stamped onto subsequently captured calls. */
+export function setSfxCaptureTime(tSec: number): void {
+  tapeT = tSec;
+}
+
+/** Stop capturing and return the tape; null if capture wasn't active. */
+export function stopSfxCapture(): SfxTapeEntry[] | null {
+  const t = tape;
+  tape = null;
+  return t;
+}
+
+// ---- Live dispatch ----------------------------------------------------------
+
+function liveSink(): AudioSink | null {
+  const a = ac(); // ensures the context + resume listeners exist
+  if (a.state !== "running") return null; // pre-gesture: stay silent
+  return { ctx: a, bus: master(), t: a.currentTime };
+}
+
+function emit(name: SfxName, arg?: number): void {
+  if (tape) {
+    tape.push({ name, arg, t: tapeT });
+    return;
+  }
+  const s = liveSink();
+  if (s) runRecipe(name, s, arg);
+}
+
+export const sfx = {
+  swing: () => emit("swing"),
+  swingHeavy: () => emit("swingHeavy"),
+  swingAir: () => emit("swingAir"),
+  hitLight: (pitch = 1) => emit("hitLight", pitch),
+  hitHeavy: (pitch = 1) => emit("hitHeavy", pitch),
+  jump: () => emit("jump"),
+  dash: () => emit("dash"),
+  slam: () => emit("slam"),
+  death: () => emit("death"),
+  tileFall: () => emit("tileFall"),
+  count: () => emit("count"),
+  go: () => emit("go"),
+  win: () => emit("win"),
+  pickupSpawn: () => emit("pickupSpawn"),
+  pickup: () => emit("pickup"),
+  shoot: () => emit("shoot"),
+  throwBomb: () => emit("throwBomb"),
+  explosion: () => emit("explosion"),
 };
+
+// ---- Offline export render --------------------------------------------------
+
+/** Reference mix for exports: the game's default volumes, deliberately NOT the
+ *  user's live sliders — a muted player should still get an audible video. */
+const EXPORT_MASTER_LEVEL = 0.8;
+const EXPORT_MUSIC_LEVEL = 0.5;
+
+/**
+ * Render a captured SFX tape (plus the battle-music bed) into a stereo 48 kHz
+ * buffer of exactly durationSec. Sample buffers decoded on the live context
+ * are context-independent, so this works even while the live context is
+ * suspended (e.g. headless browsers with no user gesture).
+ */
+export async function renderExportAudio(
+  tape: SfxTapeEntry[],
+  durationSec: number,
+  withMusic = true,
+): Promise<AudioBuffer> {
+  const sr = 48000;
+  const off = new OfflineAudioContext(2, Math.max(1, Math.ceil(durationSec * sr)), sr);
+  const bus = off.createGain();
+  bus.gain.value = EXPORT_MASTER_LEVEL;
+  bus.connect(off.destination);
+  if (withMusic) {
+    const music = buffers.get("music_battle");
+    if (music) {
+      const src = off.createBufferSource();
+      src.buffer = music;
+      src.loop = true;
+      const mg = off.createGain();
+      mg.gain.value = EXPORT_MUSIC_LEVEL;
+      src.connect(mg).connect(bus);
+      src.start(0);
+    }
+  }
+  for (const e of tape) {
+    if (e.t <= durationSec) runRecipe(e.name, { ctx: off, bus, t: e.t }, e.arg);
+  }
+  return off.startRendering();
+}
