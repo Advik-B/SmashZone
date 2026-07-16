@@ -206,6 +206,7 @@ export class ReplayPlayer {
     this.seek(startTick);
     this.exporting = true;
     this.exportSfx = withSfx;
+    this.lastCountdown = -1; // deterministic countdown beep at the start tick
     this.drawWorld(0); // settle focus/facing at the start tick
     this.exportFollowYaw = this.lastFocusYaw + Math.PI;
   }
@@ -469,7 +470,9 @@ export class ReplayPlayer {
         );
         if (secs !== this.lastCountdown) {
           this.lastCountdown = secs;
-          if (this.playing && this.sfxOn) {
+          // Exports pause the transport but still want countdown beeps (they
+          // land on the export tape).
+          if ((this.playing || this.exporting) && this.sfxOn) {
             if (secs > 0) sfx.count();
             else sfx.go();
           }

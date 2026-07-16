@@ -87,9 +87,10 @@ menu, or hit **WATCH REPLAY** right after a match:
   camera, **free-fly** anywhere (WASD + Space/Shift, scroll = speed), or
   **player view** — exact for the player who recorded (their camera is part of
   the recording), reconstructed from facing for everyone else.
-- **Export video**: frame-perfect MP4 rendered offline (usually faster than
-  real time), or real-time WebM with game audio. Follow-cam or player-cam
-  presets, 720p/1080p, 30/60 fps, whole match or a single round.
+- **Export video**: frame-perfect MP4 with game audio, rendered offline
+  (usually faster than real time — the tab can stay in the background).
+  Follow-cam or player-cam presets, 720p/1080p, 30/60 fps, standard/high
+  quality, whole match or a single round.
 - **Library**: every match you record is kept in browser storage until you
   delete it (pin favorites to find them fast), and any replay travels as a
   `.szr` file — save it, send it, import it on another machine. Replays are

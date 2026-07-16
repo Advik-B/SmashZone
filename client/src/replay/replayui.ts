@@ -7,7 +7,12 @@
 
 import { get } from "svelte/store";
 import { colorOf } from "../ui/util";
-import { ExportCancelled, type ExportHandle, type ExportRequest } from "./export";
+import {
+  ExportCancelled,
+  webCodecsAvailable,
+  type ExportHandle,
+  type ExportRequest,
+} from "./export";
 import { downloadBlob, replayFilename } from "./download";
 import { BUILD_ID, type ReplayMarker } from "./format";
 import type { ReplayMeta } from "./store";
@@ -302,7 +307,7 @@ export class ReplayViewerUI {
     const ds = p.dataset;
     const players = ds.allPlayers();
     const targetName = players.find((x) => x.id === p.followTargetId)?.name ?? "player";
-    const canMp4 = typeof VideoEncoder !== "undefined" && typeof VideoFrame !== "undefined";
+    const canExport = webCodecsAvailable();
     const span = Math.max(1, ds.endTick - ds.startTick);
     const koPcts = ds.markers
       .filter((m) => m.kind === "ko")
@@ -353,12 +358,21 @@ export class ReplayViewerUI {
         ],
       },
       {
-        key: "format",
-        label: "FORMAT",
-        initial: canMp4 ? "mp4" : "webm",
+        key: "quality",
+        label: "QUALITY",
+        initial: "standard",
         options: [
-          { value: "mp4", label: "MP4 · fast · silent", disabled: !canMp4 },
-          { value: "webm", label: "WebM · realtime · sound" },
+          { value: "standard", label: "Standard" },
+          { value: "high", label: "High · bigger file" },
+        ],
+      },
+      {
+        key: "sound",
+        label: "SOUND",
+        initial: "on",
+        options: [
+          { value: "on", label: "On" },
+          { value: "off", label: "Off" },
         ],
       },
     ];
@@ -371,9 +385,9 @@ export class ReplayViewerUI {
     S.exStatus.set("");
     S.exPreviewing.set(false);
     S.exNote.set(
-      canMp4
-        ? "MP4 renders faster than real time. WebM plays once at 1× — keep this tab visible."
-        : "this browser can't encode MP4 — WebM (real-time) it is",
+      canExport
+        ? "renders faster than real time, with game audio — the tab can stay in the background"
+        : "this browser can't export video (WebCodecs is required)",
     );
     this.exportOpen = true;
     this.previewPlaying = false;
@@ -389,7 +403,7 @@ export class ReplayViewerUI {
       presets,
       defaultName: replayFilename(ds.header, "").replace(/\.$/, ""),
       note: get(S.exNote),
-      fmtExt: (f) => (f === "webm" ? "webm" : "mp4"),
+      canExport,
       durationLabel: (i, o) => fmtTicks(o - i),
       tickLabel: (t) => fmtTicks(t - ds.startTick),
       onClose: () => this.closeExport(),
@@ -415,7 +429,7 @@ export class ReplayViewerUI {
 
   private async runExport(sel: S.ExportSelection) {
     const p = this.player;
-    if (!p || this.exportHandle) return;
+    if (!p || this.exportHandle || !webCodecsAvailable()) return;
     const [width, height] = sel.size === "1080" ? [1920, 1080] : [1280, 720];
     const req: ExportRequest = {
       width,
@@ -425,21 +439,21 @@ export class ReplayViewerUI {
       targetId: p.followTargetId,
       startTick: sel.inTick,
       endTick: sel.outTick,
-      mode: sel.format === "webm" ? "webm" : "mp4",
+      quality: sel.quality === "high" ? "high" : "standard",
+      sound: sel.sound !== "off",
       onProgress: (f) => S.exProgress.set(f),
     };
     this.previewPlaying = false;
     S.exPreviewing.set(false);
     S.exExporting.set(true);
     S.exProgress.set(0);
-    S.exStatus.set(
-      req.mode === "webm" ? "recording in real time — keep this tab visible…" : "rendering…",
-    );
+    S.exStatus.set("rendering…");
     try {
       this.exportHandle = p.startExport(req);
       const blob = await this.exportHandle.done;
-      const ext = blob.type.includes("mp4") ? "mp4" : "webm";
-      const name = sel.name.trim() ? `${sel.name.trim()}.${ext}` : replayFilename(p.dataset.header, ext);
+      const name = sel.name.trim()
+        ? `${sel.name.trim()}.mp4`
+        : replayFilename(p.dataset.header, "mp4");
       downloadBlob(blob, name);
       S.exStatus.set("saved!");
       setTimeout(() => this.closeExport(), 900);

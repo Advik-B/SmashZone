@@ -63,27 +63,6 @@ function applyGain() {
   }
 }
 
-/**
- * Tap the master bus into a MediaStream (real-time video export with game
- * audio). Honors the current volume/mute. Call stop() to detach the tap.
- */
-export function captureAudioStream(): { stream: MediaStream; stop(): void } | null {
-  if (!ctx) return null; // no AudioContext yet (no user gesture)
-  const dest = ctx.createMediaStreamDestination();
-  const bus = master();
-  bus.connect(dest);
-  return {
-    stream: dest.stream,
-    stop() {
-      try {
-        bus.disconnect(dest);
-      } catch {
-        /* already detached */
-      }
-    },
-  };
-}
-
 export function setVolume(v: number) {
   volume = clampVol(v);
   localStorage.setItem("sz-volume", String(volume));
