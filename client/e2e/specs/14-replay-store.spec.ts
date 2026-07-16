@@ -1,5 +1,5 @@
 // Replay library storage behaviors, driven through the real IndexedDB via
-// the window.__replayStore hook (no matches needed): retention cap with
+// the window.__replayStore hook (no matches needed): unbounded retention with
 // pinning, delete, and corrupt-import rejection.
 import { afterEach, describe, expect, test } from "bun:test";
 import { closeGamePages, newGamePage } from "../helpers/game";
@@ -7,7 +7,7 @@ import { closeGamePages, newGamePage } from "../helpers/game";
 afterEach(closeGamePages);
 
 describe("replay store", () => {
-  test("keeps the newest 10 unpinned replays; pinned ones never age out", async () => {
+  test("keeps every replay saved (no cap); pinning is preserved", async () => {
     const { page } = await newGamePage({ name: "Alpha" });
 
     const result = (await page.evaluate(async () => {
@@ -37,7 +37,7 @@ describe("replay store", () => {
         // savedAt is Date.now(); keep insertion order distinct.
         await new Promise((r) => setTimeout(r, 5));
       }
-      // Pin the oldest, then flood past the cap.
+      // Pin the oldest, then save well past the old cap of 10 — nothing evicts.
       await store.setPinned(ids[0], true);
       for (let n = 3; n < 14; n++) {
         ids.push(await store.saveReplay(mkHeader(n), new Blob([`r${n}`])));
@@ -47,22 +47,23 @@ describe("replay store", () => {
       return {
         count: list.length,
         pinnedSurvived: list.some((m: any) => m.id === ids[0]),
-        oldestUnpinnedGone: !list.some((m: any) => m.id === ids[1]),
+        oldestUnpinnedKept: list.some((m: any) => m.id === ids[1]),
         unpinnedCount: list.filter((m: any) => !m.pinned).length,
         blobOfPinned: (await store.getReplayBlob(ids[0])) !== null,
       };
     })) as {
       count: number;
       pinnedSurvived: boolean;
-      oldestUnpinnedGone: boolean;
+      oldestUnpinnedKept: boolean;
       unpinnedCount: number;
       blobOfPinned: boolean;
     };
 
-    expect(result.unpinnedCount).toBe(10); // MAX_REPLAYS
-    expect(result.count).toBe(11); // + the pinned one
+    // No cap: all 14 saved replays are retained.
+    expect(result.count).toBe(14);
+    expect(result.unpinnedCount).toBe(13); // 14 total − 1 pinned
     expect(result.pinnedSurvived).toBe(true);
-    expect(result.oldestUnpinnedGone).toBe(true);
+    expect(result.oldestUnpinnedKept).toBe(true);
     expect(result.blobOfPinned).toBe(true);
   }, 60_000);
 

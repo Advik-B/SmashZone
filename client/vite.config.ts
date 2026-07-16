@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 export default defineConfig({
+  // The DOM/HUD overlay is a Svelte app; the Three.js render loop stays plain TS.
+  plugins: [svelte()],
   // Build identity baked into replay files: postcard wire bytes are only
   // guaranteed decodable by the same build, so replays record who wrote them.
   // CI/Docker pass BUILD_ID (e.g. the git short SHA); dev builds say "dev".
@@ -15,5 +18,15 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
+    // three.js is ~600 kB on its own and unavoidable; give it a long-cached
+    // vendor chunk and lift the warning threshold above it.
+    chunkSizeWarningLimit: 1600,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/three")) return "three";
+        },
+      },
+    },
   },
 });

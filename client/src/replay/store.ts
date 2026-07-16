@@ -3,16 +3,15 @@
 //   blobs — the whole .szr container Blob per id (export/import is a
 //           pass-through of these bytes, never a re-encode)
 //
-// Retention: the newest MAX_REPLAYS unpinned replays are kept; saving beyond
-// that evicts the oldest unpinned. Pinned replays never count and never age
-// out. localStorage stays for tiny prefs; replays are far too big for it.
+// Retention: every saved replay is kept until you delete it — there is no cap.
+// Pinning just marks favorites. localStorage stays for tiny prefs; replays are
+// far too big for it.
 
 import type { ReplayHeader } from "./format";
 import { readContainer } from "./format";
 
 const DB_NAME = "sz-replays";
 const DB_VERSION = 1;
-export const MAX_REPLAYS = 10;
 
 export interface ReplayMeta {
   id: string;
@@ -88,7 +87,6 @@ export async function saveReplay(header: ReplayHeader, blob: Blob): Promise<stri
   tx.objectStore("meta").put(meta);
   tx.objectStore("blobs").put(blob, id);
   await done(tx);
-  await evictOverCap(db);
   return id;
 }
 
@@ -157,12 +155,3 @@ export async function storageEstimate(): Promise<{ usage: number; quota: number 
   }
 }
 
-async function evictOverCap(db: IDBDatabase): Promise<void> {
-  const tx = db.transaction("meta", "readonly");
-  const all = await result(tx.objectStore("meta").getAll() as IDBRequest<ReplayMeta[]>);
-  const unpinned = all.filter((m) => !m.pinned).sort((a, b) => a.savedAt - b.savedAt);
-  const excess = unpinned.length - MAX_REPLAYS;
-  for (let i = 0; i < excess; i++) {
-    await deleteReplay(unpinned[i].id);
-  }
-}
