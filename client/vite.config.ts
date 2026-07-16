@@ -16,6 +16,11 @@ export default defineConfig({
       "/ws": { target: "ws://localhost:8080", ws: true },
     },
   },
+  // @ffmpeg/ffmpeg spawns its worker via `new URL(..., import.meta.url)`;
+  // esbuild pre-bundling breaks that resolution in dev, so serve it as-is.
+  optimizeDeps: {
+    exclude: ["@ffmpeg/ffmpeg"],
+  },
   build: {
     target: "esnext",
     // three.js is ~600 kB on its own and unavoidable; give it a long-cached
