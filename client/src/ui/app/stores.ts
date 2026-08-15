@@ -291,3 +291,15 @@ export const exStatus = writable("");
 export const exPreviewing = writable(false);
 export const exPreviewTime = writable("0:00");
 export const exNote = writable("");
+
+/* ------------------------------------------------------------ app updates */
+
+/**
+ * Set when a newer build has installed but the player is somewhere a reload
+ * would interrupt (mid-match, mid-replay).  `apply` swaps immediately; leaving
+ * it alone is fine — src/pwa/register.ts applies it on the way back to the menu.
+ */
+export interface UpdateState {
+  apply: () => void;
+}
+export const updateReady = writable<UpdateState | null>(null);

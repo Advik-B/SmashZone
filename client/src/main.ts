@@ -24,6 +24,7 @@ import {
   setVolume,
 } from "./game/audio";
 import { savedQuality, saveQuality } from "./game/quality";
+import { registerServiceWorker } from "./pwa/register";
 import { ReplayDataset } from "./replay/dataset";
 import { BUILD_ID } from "./replay/format";
 import { recordingEnabled, setRecordingEnabled } from "./replay/recorder";
@@ -259,6 +260,10 @@ async function main() {
 
   showMenu();
   requestAnimationFrame(loop);
+
+  // Last: precaching the offline bundle shouldn't compete with the assets the
+  // player is waiting on.
+  registerServiceWorker();
 }
 
 main();

@@ -7,6 +7,7 @@
     replayLib,
     replayViewer,
     exportModal,
+    updateReady,
   } from "./stores";
   import Menu from "../screens/Menu.svelte";
   import Connecting from "../screens/Connecting.svelte";
@@ -16,6 +17,7 @@
   import Settings from "../modals/Settings.svelte";
   import InputModePrompt from "../modals/InputModePrompt.svelte";
   import ExportModal from "../screens/ExportModal.svelte";
+  import UpdateToast from "../components/UpdateToast.svelte";
 </script>
 
 {#if $screen === "menu" && $menu}
@@ -34,3 +36,6 @@
 {#if $inputPrompt}<InputModePrompt data={$inputPrompt} />{/if}
 {#if $settingsModal}<Settings data={$settingsModal} />{/if}
 {#if $exportModal}<ExportModal data={$exportModal} />{/if}
+
+<!-- Above everything: a build installed while the player was mid-match. -->
+{#if $updateReady}<UpdateToast data={$updateReady} />{/if}

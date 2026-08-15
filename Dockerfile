@@ -19,7 +19,10 @@ COPY shared ./shared
 COPY --from=wasm-builder /app/client/src/wasm/pkg ./client/src/wasm/pkg
 # Stamped into replay files: postcard wire bytes are only guaranteed decodable
 # by the build that wrote them, so the viewer warns on mismatched replays.
-# Pass e.g. --build-arg BUILD_ID=$(git rev-parse --short HEAD) when deploying.
+# No .git is copied here, so the git fallback in client/build/buildid.ts can't
+# fire — pass --build-arg BUILD_ID=$(git rev-parse --short HEAD) to stamp the
+# commit. Optional: the PWA's update mechanism versions itself from the built
+# bytes and doesn't depend on this.
 ARG BUILD_ID=dev
 ENV BUILD_ID=$BUILD_ID
 RUN cd client && bun run build

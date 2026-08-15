@@ -20,6 +20,11 @@ export interface GamePageOpts {
   touch?: boolean;
   /** Skip the audio-mute seeding (for the settings-persistence spec). */
   seedAudio?: boolean;
+  /**
+   * Let the service worker register. Off by default so specs always exercise
+   * the network and never a precache; the PWA spec is the one that wants it.
+   */
+  serviceWorker?: boolean;
 }
 
 export interface GamePage {
@@ -78,7 +83,8 @@ export async function newGamePage(opts: GamePageOpts = {}): Promise<GamePage> {
   const page = await ctx.newPage();
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(String(err)));
-  await page.goto("/");
+  // `?nosw` is read by src/pwa/register.ts — see GamePageOpts.serviceWorker.
+  await page.goto(opts.serviceWorker ? "/" : "/?nosw=1");
   // Menu appears once WASM + character model + audio finish loading.
   await page.waitForSelector("#m-create", { timeout: 30_000 });
   return { page, ctx, errors };

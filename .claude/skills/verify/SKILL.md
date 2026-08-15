@@ -37,7 +37,8 @@ defaults to `/opt/pw-browsers/chromium` when present, else Playwright's own).
 
 `client/e2e/specs/` maps one file per feature area: HTTP surface, menu, lobby,
 match flow, movement, combat, arena+pickups, HUD/render, spectate, reconnect,
-touch. Gameplay logic that's already covered deterministically by the ~67 Rust
+touch, replays (record/playback/export/store), PWA (manifest + service worker +
+offline boot). Gameplay logic that's already covered deterministically by the ~67 Rust
 tests (sim determinism, bot winrates, weapon physics, DI, hit-mask, protocol
 round-trips, room lifecycle) is **not** re-tested through the browser — run
 those with:
