@@ -4,7 +4,8 @@
   type IconName =
     | "gear" | "replays" | "copy" | "crown" | "bot" | "close" | "plus" | "wifi"
     | "trophy" | "pin" | "pinoff" | "save" | "trash" | "back" | "play" | "pause"
-    | "koPrev" | "koNext" | "refresh" | "export" | "sound" | "music";
+    | "koPrev" | "koNext" | "refresh" | "export" | "sound" | "music"
+    | "expand" | "shrink" | "install";
 
   let { name, size = 18 }: { name: IconName; size?: number } = $props();
   const sw = 2;
@@ -67,5 +68,11 @@
     <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" /><path d="M16 9a5 5 0 0 1 0 6" /><path d="M19.364 18.364a9 9 0 0 0 0-12.728" />
   {:else if name === "music"}
     <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+  {:else if name === "expand"}
+    <path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M21 8V5a2 2 0 0 0-2-2h-3" /><path d="M3 16v3a2 2 0 0 0 2 2h3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+  {:else if name === "shrink"}
+    <path d="M3 8h3a2 2 0 0 0 2-2V3" /><path d="M16 3v3a2 2 0 0 0 2 2h3" /><path d="M21 16h-3a2 2 0 0 0-2 2v3" /><path d="M8 21v-3a2 2 0 0 0-2-2H3" />
+  {:else if name === "install"}
+    <path d="M12 3v12" /><path d="m8 11 4 4 4-4" /><path d="M3 17v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2" />
   {/if}
 </svg>

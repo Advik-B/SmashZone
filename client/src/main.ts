@@ -23,7 +23,9 @@ import {
   setMusicVolume,
   setVolume,
 } from "./game/audio";
+import { enterFullscreen, fullscreenPreferred } from "./game/fullscreen";
 import { savedQuality, saveQuality } from "./game/quality";
+import { watchInstallPrompt } from "./pwa/install";
 import { registerServiceWorker } from "./pwa/register";
 import { ReplayDataset } from "./replay/dataset";
 import { BUILD_ID } from "./replay/format";
@@ -181,12 +183,22 @@ async function main() {
     }
   };
 
+  /**
+   * Take the whole screen for the match. Must run before the first `await` in
+   * these handlers: the browser only grants fullscreen while the click that
+   * triggered it is still the active user gesture.
+   */
+  const goFullscreen = () => {
+    if (fullscreenPreferred()) void enterFullscreen();
+  };
+
   const showMenu = (error = "") => {
     document.exitPointerLock?.();
     touch?.hide();
     playMusic("menu");
     ui.showMenu(
       async (name) => {
+        goFullscreen();
         if (!(await ensureMode())) return;
         try {
           const code = await createRoom();
@@ -196,6 +208,7 @@ async function main() {
         }
       },
       async (name, code) => {
+        goFullscreen();
         if (!(await ensureMode())) return;
         start(name, code);
       },
@@ -266,4 +279,8 @@ async function main() {
   registerServiceWorker();
 }
 
+// Before main(): `beforeinstallprompt` can fire while the WASM sim, model and
+// audio are still loading, and it's only catchable if the listener is already
+// attached.
+watchInstallPrompt();
 main();

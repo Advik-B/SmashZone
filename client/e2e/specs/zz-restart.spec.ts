@@ -42,7 +42,11 @@ describe("server restart", () => {
         localStorage.setItem("sz-music-muted", "1");
       });
       const page = await ctx.newPage();
-      await page.goto("/");
+      // `?nosw`, as newGamePage does for every other spec (this one builds its
+      // own context, so it has to opt out by hand). Otherwise the worker starts
+      // precaching the whole bundle from the very server this test is about to
+      // SIGTERM, and the shutdown notice races a ~35 MB download.
+      await page.goto("/?nosw=1");
       await page.waitForSelector("#m-create", { timeout: 30_000 });
       await createRoom(page, "Ghost");
 

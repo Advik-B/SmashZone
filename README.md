@@ -99,14 +99,24 @@ menu, or hit **WATCH REPLAY** right after a match:
 The server never records anything — snapshots are already byte-identical for
 every client, so your copy of the match *is* the match.
 
-## Install it (PWA)
+## Fullscreen, and installing (PWA)
 
-SmashZone is an installable app: "Install"/"Add to Home Screen" gives it its
-own icon and a fullscreen window with no browser chrome. A service worker
-precaches the whole bundle — engine, arena model, fonts, every sound, and the
-ffmpeg core the exporter needs — so after one visit the menu, settings and the
-entire replay library work with no network at all. Only playing together needs
-the server.
+**The game takes the whole screen.** Starting a match goes fullscreen on its
+own, and the button top-right of the menu (or *Settings → Display*) toggles it
+any time; the choice is remembered. On phones, going fullscreen also locks to
+landscape, which is the orientation the on-screen thumbstick and action buttons
+are laid out for. Esc leaves fullscreen as usual.
+
+SmashZone is also installable: "Install" / "Add to Home Screen" gives it its own
+icon and launches it with no browser chrome at all — the manifest asks for
+`display: fullscreen`. The menu shows an **INSTALL APP** button whenever the
+browser reports the game is installable. On iPhone that's the only route to a
+chrome-free game, because Safari there has no Fullscreen API.
+
+A service worker precaches the whole bundle — engine, arena model, fonts, every
+sound, and the ffmpeg core the exporter needs — so after one visit the menu,
+settings and the entire replay library work with no network at all. Only playing
+together needs the server.
 
 **Updates take care of themselves.** There is no version constant anywhere to
 bump: `client/build/pwa.ts` names the worker's cache after a content hash of

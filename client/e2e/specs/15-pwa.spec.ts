@@ -20,10 +20,19 @@ describe("pwa", () => {
     const manifest = (await res.json()) as {
       name: string;
       start_url: string;
+      display: string;
+      display_override?: string[];
+      orientation?: string;
       icons: { src: string; sizes: string; purpose?: string }[];
     };
     expect(manifest.name).toBe("SmashZone");
     expect(manifest.start_url).toBe("/");
+    // The reason the app is installable at all: an installed launch has no
+    // browser chrome. `standalone` is the fallback where fullscreen isn't honored.
+    expect(manifest.display).toBe("fullscreen");
+    expect(manifest.display_override?.[0]).toBe("fullscreen");
+    // The touch controls (thumbstick left, buttons right) assume a wide screen.
+    expect(manifest.orientation).toBe("landscape");
     // Chrome installs only with a 192 and a 512, and Android needs a maskable.
     expect(manifest.icons.map((i) => i.sizes)).toContain("192x192");
     expect(manifest.icons.map((i) => i.sizes)).toContain("512x512");
