@@ -8,6 +8,7 @@
     "build": "bunx --bun svelte-check --tsconfig ./tsconfig.json && bunx --bun vite build",
     "typecheck": "bunx --bun svelte-check --tsconfig ./tsconfig.json && bunx --bun tsc -p e2e/tsconfig.json --noEmit",
     "wasm": "wasm-pack build ../crates/sim-wasm --target web --out-dir ../../client/src/wasm/pkg --release",
+    "icons": "bun run build/gen-icons.ts",
     "test:e2e": "bun run e2e/run.ts"
   },
   "dependencies": {

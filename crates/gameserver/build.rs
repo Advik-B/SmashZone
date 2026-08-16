@@ -14,6 +14,8 @@ fn mime_for(path: &Path) -> &'static str {
         "css" => "text/css",
         "wasm" => "application/wasm",
         "json" | "map" => "application/json",
+        "webmanifest" => "application/manifest+json",
+        "ogg" => "audio/ogg",
         "glb" => "model/gltf-binary",
         "gltf" => "model/gltf+json",
         "svg" => "image/svg+xml",
@@ -49,6 +51,10 @@ fn main() {
     let dist = manifest.join("../../client/dist");
     // Cargo watches directories recursively; also fires when a missing dist appears.
     println!("cargo:rerun-if-changed={}", dist.display());
+    // Vite copies client/public verbatim, so anything present in both is served
+    // under its author-time name — see `immutable` below.
+    let public = manifest.join("../../client/public");
+    println!("cargo:rerun-if-changed={}", public.display());
 
     let mut files = Vec::new();
     if dist.join("index.html").exists() {
@@ -67,14 +73,20 @@ fn main() {
     }
 
     let mut src = String::from(
-        "pub struct StaticAsset {\n    pub path: &'static str,\n    pub mime: &'static str,\n    pub bytes: &'static [u8],\n}\n\npub static STATIC_ASSETS: &[StaticAsset] = &[\n",
+        "pub struct StaticAsset {\n    pub path: &'static str,\n    pub mime: &'static str,\n    /// Content-hashed filename: safe to cache forever.\n    pub immutable: bool,\n    pub bytes: &'static [u8],\n}\n\npub static STATIC_ASSETS: &[StaticAsset] = &[\n",
     );
     for (rel, abs) in &files {
+        // Vite content-hashes what it emits into assets/, so those URLs change
+        // whenever their bytes do. Files copied straight out of public/ keep
+        // their author-time name (audio, fonts, robot.glb) and must revalidate,
+        // or a replaced sound would stay stale in browsers for a year.
+        let immutable = rel.starts_with("assets/") && !public.join(rel).exists();
         writeln!(
             src,
-            "    StaticAsset {{ path: {:?}, mime: {:?}, bytes: include_bytes!({:?}) }},",
+            "    StaticAsset {{ path: {:?}, mime: {:?}, immutable: {}, bytes: include_bytes!({:?}) }},",
             rel,
             mime_for(abs),
+            immutable,
             abs.canonicalize().unwrap()
         )
         .unwrap();

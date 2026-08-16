@@ -99,6 +99,33 @@ menu, or hit **WATCH REPLAY** right after a match:
 The server never records anything — snapshots are already byte-identical for
 every client, so your copy of the match *is* the match.
 
+## Fullscreen, and installing (PWA)
+
+**The game takes the whole screen.** Starting a match goes fullscreen on its
+own, and the button top-right of the menu (or *Settings → Display*) toggles it
+any time; the choice is remembered. On phones, going fullscreen also locks to
+landscape, which is the orientation the on-screen thumbstick and action buttons
+are laid out for. Esc leaves fullscreen as usual.
+
+SmashZone is also installable: "Install" / "Add to Home Screen" gives it its own
+icon and launches it with no browser chrome at all — the manifest asks for
+`display: fullscreen`. The menu shows an **INSTALL APP** button whenever the
+browser reports the game is installable. On iPhone that's the only route to a
+chrome-free game, because Safari there has no Fullscreen API.
+
+A service worker precaches the whole bundle — engine, arena model, fonts, every
+sound, and the ffmpeg core the exporter needs — so after one visit the menu,
+settings and the entire replay library work with no network at all. Only playing
+together needs the server.
+
+**Updates take care of themselves.** There is no version constant anywhere to
+bump: `client/build/pwa.ts` names the worker's cache after a content hash of
+everything in the build, so pushing a change and redeploying is the whole
+release process. Open tabs check for a new build on load, when refocused, and
+every 15 minutes. A waiting update is applied silently while you're on the
+menu, and never mid-match — if you're playing, it shows a small "new version
+ready" toast and swaps the moment you're back on the menu.
+
 ## Development
 
 ```bash
@@ -130,7 +157,8 @@ cargo test
 
 Browser integration tests drive the real game (compiled server + embedded
 client) headlessly with Playwright, covering menu/lobby/match flow, movement,
-combat, arena shrink, pickups, HUD, spectating, and reconnection:
+combat, arena shrink, pickups, HUD, spectating, reconnection, replays, and the
+PWA (install surface + booting with the network cut):
 
 ```bash
 cd client && bun run test:e2e     # builds wasm + client + server, runs the suite
@@ -167,6 +195,22 @@ Or as a container:
 docker build -t smashzone .
 docker run -p 8080:8080 smashzone
 ```
+
+### Build identity
+
+Two stamps come out of a build, and neither is edited by hand:
+
+- **Service-worker cache version** — a content hash over every file that
+  ships, computed in `client/build/pwa.ts` and substituted into `dist/sw.js`.
+  It changes if and only if the bytes change, in every build path (local,
+  CI, Docker, Fly), which is what makes installed clients update themselves.
+  Nothing configures it; there is nothing to pass.
+- **`BUILD_ID`** — the human-readable stamp written into `.szr` replay headers
+  (postcard wire bytes are only guaranteed decodable by the build that wrote
+  them, so the viewer warns on a mismatch). `client/build/buildid.ts` resolves
+  it from `$BUILD_ID`, else the working tree's git SHA, else `"dev"`. Docker
+  copies no `.git`, so pass it there if you want replays stamped with the
+  commit: `docker build --build-arg BUILD_ID=$(git rev-parse --short HEAD) .`
 
 Tuning values (speeds, impulses, tick rates, shrink schedule) live in
 [shared/constants.json](shared/constants.json), read by both Rust and

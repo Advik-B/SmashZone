@@ -27,8 +27,11 @@ async fn serve_static(uri: Uri) -> Response {
         .or_else(|| STATIC_ASSETS.iter().find(|a| a.path == "index.html"));
     match asset {
         Some(a) => {
-            // Vite content-hashes everything under assets/; index.html must revalidate.
-            let cache = if a.path.starts_with("assets/") {
+            // Only content-hashed filenames get pinned (build.rs decides which).
+            // Everything else — index.html, sw.js, the manifest, and the files
+            // copied verbatim out of client/public — revalidates, so a redeploy
+            // actually reaches the browser.
+            let cache = if a.immutable {
                 "public, max-age=31536000, immutable"
             } else {
                 "no-cache"

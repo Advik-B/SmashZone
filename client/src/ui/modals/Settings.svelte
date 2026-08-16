@@ -6,6 +6,13 @@
   import Keycap from "../components/Keycap.svelte";
   import { focusOnMount } from "../app/actions";
   import { untrack } from "svelte";
+  import {
+    enterFullscreen,
+    exitFullscreen,
+    fullscreenPreferred,
+    fullscreenSupported,
+    setFullscreenPreferred,
+  } from "../../game/fullscreen";
 
   let { data }: { data: SettingsState } = $props();
 
@@ -27,6 +34,11 @@
   let mmuted = $state(init.mmuted);
   let quality = $state<Quality>(init.quality);
   let record = $state(init.record);
+
+  // Fullscreen is self-contained (no engine side-effects), so it reads and
+  // writes its own module instead of being threaded through SettingsState.
+  const canGoFullscreen = fullscreenSupported();
+  let fullscreen = $state(untrack(() => fullscreenPreferred()));
 
   function pickMode(m: InputMode) {
     data.onPickMode(m);
@@ -129,6 +141,27 @@
       />
     </label>
   </div>
+
+  {#if canGoFullscreen}
+    <div class="settings-section">
+      <div class="sec-label"><Icon name="expand" size={14} /><span>DISPLAY</span></div>
+      <label class="settings-row">
+        <span>play fullscreen</span>
+        <input
+          id="set-fullscreen"
+          type="checkbox"
+          checked={fullscreen}
+          onchange={(e) => {
+            fullscreen = e.currentTarget.checked;
+            setFullscreenPreferred(fullscreen);
+            // A checkbox change is a user gesture, so this is allowed to take
+            // effect right now rather than waiting for the next match.
+            void (fullscreen ? enterFullscreen() : exitFullscreen());
+          }}
+        />
+      </label>
+    </div>
+  {/if}
 
   <div class="settings-section">
     <div class="sec-label">QUALITY</div>

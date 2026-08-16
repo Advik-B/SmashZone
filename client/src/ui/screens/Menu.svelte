@@ -2,8 +2,22 @@
   import type { MenuState } from "../app/stores";
   import Icon from "../components/Icon.svelte";
   import ControlsHint from "../components/ControlsHint.svelte";
+  import {
+    fullscreenSupported,
+    isFullscreen,
+    onFullscreenChange,
+    toggleFullscreen,
+  } from "../../game/fullscreen";
+  import { canInstall, promptInstall } from "../../pwa/install";
 
   let { data }: { data: MenuState } = $props();
+
+  // iPhone Safari has no Fullscreen API; there the install button is the only
+  // route to a chrome-free game, so don't offer a button that can't work.
+  const canGoFullscreen = fullscreenSupported();
+  let fullscreen = $state(isFullscreen());
+  // Also catches the player leaving fullscreen with Esc / the system gesture.
+  $effect(() => onFullscreenChange((on) => (fullscreen = on)));
 
   let name = $state(localStorage.getItem("sz-name") ?? "");
   let code = $state("");
@@ -27,17 +41,32 @@
 </script>
 
 <div class="sz-screen menu">
-  {#if !data.touch}
-    <button
-      id="m-settings"
-      class="sz-iconbtn gear"
-      aria-label="Settings"
-      title="Settings"
-      onclick={data.onSettings}
-    >
-      <Icon name="gear" size={21} />
-    </button>
-  {/if}
+  <!-- Touch players never see the gear, so fullscreen gets its own button. -->
+  <div class="topbar">
+    {#if canGoFullscreen}
+      <button
+        id="m-fullscreen"
+        class="sz-iconbtn topbtn"
+        aria-label={fullscreen ? "Exit fullscreen" : "Play fullscreen"}
+        title={fullscreen ? "Exit fullscreen" : "Play fullscreen"}
+        aria-pressed={fullscreen}
+        onclick={() => void toggleFullscreen()}
+      >
+        <Icon name={fullscreen ? "shrink" : "expand"} size={21} />
+      </button>
+    {/if}
+    {#if !data.touch}
+      <button
+        id="m-settings"
+        class="sz-iconbtn topbtn"
+        aria-label="Settings"
+        title="Settings"
+        onclick={data.onSettings}
+      >
+        <Icon name="gear" size={21} />
+      </button>
+    {/if}
+  </div>
 
   <div class="brand">
     <div class="sz-eyebrow">ONLINE ARENA BRAWLER</div>
@@ -72,6 +101,13 @@
         <Icon name="replays" size={17} /><span>REPLAYS</span>
       </button>
     {/if}
+    <!-- Only ever appears when the browser says an install is possible; an
+         installed launch is fullscreen with no browser chrome at all. -->
+    {#if $canInstall}
+      <button id="m-install" class="sz-btn replays" onclick={() => void promptInstall()}>
+        <Icon name="install" size={17} /><span>INSTALL APP</span>
+      </button>
+    {/if}
   </div>
 
   <div class="footer">
@@ -86,17 +122,24 @@
 </div>
 
 <style>
-  .gear {
+  .topbar {
     position: absolute;
-    top: 16px;
-    right: 16px;
+    top: max(16px, env(safe-area-inset-top));
+    right: max(16px, env(safe-area-inset-right));
+    display: flex;
+    gap: 8px;
+  }
+  .topbtn {
     width: 42px;
     height: 42px;
     border-radius: 11px;
     background: #171c38;
     color: var(--muted);
   }
-  .gear :global(svg) {
+  .topbtn[aria-pressed="true"] {
+    color: var(--gold);
+  }
+  .topbtn :global(svg) {
     width: 21px;
     height: 21px;
   }
